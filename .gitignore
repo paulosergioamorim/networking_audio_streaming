@@ -1,0 +1,6 @@
+/audios
+/obj
+*.o
+*.d
+server
+client

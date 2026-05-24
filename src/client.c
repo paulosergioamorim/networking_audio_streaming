@@ -1,48 +1,35 @@
-#include "event.h"
+#include "packets.h"
+#include "signals.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
-#include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <vlc/libvlc.h>
-#include <vlc/libvlc_media.h>
-#include <vlc/vlc.h>
+// #include <vlc/libvlc.h>
+// #include <vlc/libvlc_media.h>
+// #include <vlc/vlc.h>
 
-int fd;
-
-libvlc_instance_t *vlc_instance;
-libvlc_media_player_t *vlc_mp;
-libvlc_media_t *vlc_media;
-
-void server_handle_sigint(int signal) {
-    close(fd);
-    char buf[] = "Exiting server by ^C\n";
-    write(STDOUT_FILENO, buf, sizeof(buf));
-    exit(0);
-}
+// libvlc_instance_t *vlc_instance;
+// libvlc_media_player_t *vlc_mp;
+// libvlc_media_t *vlc_media;
 
 int main(int argc, char **argv) {
-    struct sigaction sa = {0};
-    sa.sa_handler = server_handle_sigint;
-    vlc_instance = libvlc_new(0, NULL);
-    vlc_media = libvlc_media_new_path(vlc_instance, "chelonia.mp4");
-    vlc_mp = libvlc_media_player_new_from_media(vlc_media);
-    libvlc_media_player_play(vlc_mp);
-
-    if (sigaction(SIGINT, &sa, NULL) == -1) {
-        fprintf(stderr, "Failed to create handler to SIGINT: %s\n", strerror(errno));
+    if (signals_sigint_sigaction() == -1) {
         return 1;
     }
 
-    fd = socket(AF_INET, SOCK_STREAM, 0);
+    // vlc_instance = libvlc_new(0, NULL);
+    // vlc_media = libvlc_media_new_path(vlc_instance, "./audios/chelonia.mp4");
+    // vlc_mp = libvlc_media_player_new_from_media(vlc_media);
+    // libvlc_media_player_play(vlc_mp);
 
-    if (fd == -1) {
+    int tcpfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (tcpfd == -1) {
         fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
         return 1;
     }
@@ -52,42 +39,79 @@ int main(int argc, char **argv) {
     saddr.sin_addr.s_addr = htonl(INADDR_ANY);
     saddr.sin_port = htons(8000);
 
-    if (connect(fd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
+    if (connect(tcpfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
         fprintf(stderr, "Failed to connect socket: %s\n", strerror(errno));
-        close(fd);
+        close(tcpfd);
         return 1;
     }
 
-    while (1) {
-        char buf[256] = {0};
+    printf("/help for more info\n");
+
+    Message req;
+    Message res;
+    char prompt[256] = {0};
+    while (!signaled) {
         printf(">>> ");
-        scanf("%255s", buf);
-        Event event;
-        if (strcmp(buf, "/help") == 0) {
-            event = (Event){.kind = EVENT_COMMAND, .buf = "/help"};
-        } else if (strcmp(buf, "/list") == 0) {
-            event = (Event){.kind = EVENT_COMMAND, .buf = "/list"};
-        } else if (strncmp(buf, "/start", 6) == 0) {
-            event = (Event){
-                .kind = EVENT_COMMAND,
-            };
-            strncpy(event.buf, buf, sizeof(buf) - 1);
-            event.buf[sizeof(buf) - 1] = '\0';
+        memset(prompt, 0, sizeof(prompt));
+        memset(&req, 0, sizeof(req));
+        memset(&res, 0, sizeof(res));
+        fgets(prompt, sizeof(prompt), stdin);
+        char *ptr = strchr(prompt, '\n');
+
+        if (ptr) {
+            *ptr = '\0';
+        }
+
+        if (*prompt == '\0') {
+            continue;
+        }
+
+        if (strcmp(prompt, "/exit") == 0) {
+            break;
+        }
+        if (strcmp(prompt, "/help") == 0) {
+            printf("/help -> more info\n"
+                   "/list -> list avaliable songs\n"
+                   "/start <file> -> start streaming file\n"
+                   "/stop -> stop streaming\n"
+                   "/resume -> resume streaming\n"
+                   "/exit or ^C to exit\n");
+            continue;
+        }
+
+        if (strcmp(prompt, "/list") == 0) {
+            strcat(req.buf, "/list");
+        } else if (strncmp(prompt, "/start", 6) == 0) {
+            strncpy(req.buf, prompt, sizeof(prompt) - 1);
+            req.buf[sizeof(prompt) - 1] = '\0';
         } else {
             printf("Invalid input\n");
             continue;
         }
-        if (write(fd, &event, sizeof(event)) == -1) {
-            perror("write");
-            continue;
+
+        int wr = send(tcpfd, &req, sizeof(req), MSG_NOSIGNAL);
+        if (wr == -1) {
+            perror("send");
+            break;
         }
-        recvfrom(fd, &event, sizeof(event), 0, NULL, 0);
-        if (event.kind == EVENT_MESSAGE) {
-            printf("%s", event.buf);
+
+        int br = recv(tcpfd, &res, sizeof(res), 0);
+
+        if (br == -1) {
+            perror("recv");
+            break;
+        }
+
+        if (res.kind == MESSAGE_DISPLAY) {
+            printf("%s", res.buf);
+        }
+
+        if (strcmp(res.buf, "START OK") == 0) {
+            printf("%s\n", res.buf);
         }
     }
 
-    if (close(fd) == -1) {
+    if (close(tcpfd) == -1) {
         fprintf(stderr, "Failed to close socket: %s\n", strerror(errno));
         return 1;
     }

@@ -1,5 +1,5 @@
 CC 		:= gcc
-FLAGS 	:= -Wall -MMD -MP
+FLAGS 	:= -MMD -MP
 SRC 	:= $(wildcard src/*.c)
 TEST	:= $(wildcard test/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
@@ -20,14 +20,14 @@ obj/%_test.o: test/%.c | objFolder
 obj/%.o: src/%.c | objFolder
 	$(CC) $< -o $@ -c $(FLAGS)
 
-server: obj/server.o
-	$(CC) $< -o $@ $(FLAGS) -lpthread
+server: obj/server.o obj/signals.o obj/suffix.o
+	$(CC) $^ -o $@ $(FLAGS) -lpthread
 
-client: obj/client.o
-	$(CC) $< -o $@ $(FLAGS) -l vlc -lpthread
+client: obj/client.o obj/signals.o
+	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread
 
 clean:
-	rm -rf obj
+	rm -rf obj server client
 
 -include $(DEP)
 
