@@ -80,10 +80,11 @@ int main(int argc, char **argv) {
         }
 
         if (strcmp(prompt, "/list") == 0) {
-            strcat(req.buf, "/list");
+            req.kind = REQ_LIST;
         } else if (strncmp(prompt, "/start", 6) == 0) {
-            strncpy(req.buf, prompt, sizeof(prompt) - 1);
-            req.buf[sizeof(prompt) - 1] = '\0';
+            req.kind = REQ_START;
+            char *filename = prompt + sizeof("/start ") - 1;
+            strcpy(req.buf, filename);
         } else {
             printf("Invalid input\n");
             continue;
@@ -102,12 +103,22 @@ int main(int argc, char **argv) {
             break;
         }
 
-        if (res.kind == MESSAGE_DISPLAY) {
-            printf("%s", res.buf);
+        if (res.kind == RES_LIST_END) {
+            printf("No audio files\n");
+            continue;
         }
 
-        if (strcmp(res.buf, "START OK") == 0) {
-            printf("%s\n", res.buf);
+        if (res.kind == RES_LIST_CONTINUE) {
+            do {
+                printf("%s\n", res.buf);
+                int br = recv(tcpfd, &res, sizeof(res), 0);
+
+                if (br == -1) {
+                    perror("recv");
+                    break;
+                }
+            } while (res.kind != RES_LIST_END);
+            continue;
         }
     }
 
