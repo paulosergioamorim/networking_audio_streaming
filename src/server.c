@@ -149,25 +149,28 @@ int main(int argc, char **argv) {
                 char *filename = req.buf + sizeof("/start ") - 1;
                 char fullname[255] = AUDIODIR "/";
                 strncat(fullname, filename, sizeof(fullname) - sizeof(AUDIODIR "/"));
-                struct stat st;
                 int fd = open(fullname, O_RDONLY);
 
-                if (ok == -1 && errno == ENOENT) {
-                    res.kind = RES_START_OK;
+                if (fd == -1 && errno == ENOENT) {
+                    res.kind = RES_START_NO_FILE;
                     send(sockfd, &res, sizeof(res), 0);
                 }
 
                 Connections_State *state = hmgetp(conns, sockfd);
                 state->value.fd = fd;
-                res.kind = RES_START_NO_FILE;
+                res.kind = RES_START_OK;
                 strcat(res.buf, "START OK");
                 send(sockfd, &res, sizeof(res), 0);
                 continue;
             }
             if (req.kind == REQ_STOP) {
+                Connections_State *state = hmgetp(conns, sockfd);
+                state->value.playing = 0;
                 continue;
             }
             if (req.kind == REQ_RESUME) {
+                Connections_State *state = hmgetp(conns, sockfd);
+                state->value.playing = 1;
                 continue;
             }
         }
