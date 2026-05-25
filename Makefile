@@ -1,7 +1,6 @@
 CC 		:= gcc
 FLAGS 	:= -MMD -MP
 SRC 	:= $(wildcard src/*.c)
-TEST	:= $(wildcard test/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
 DEP 	:= $(OBJ:.o=.d)
 
@@ -13,9 +12,6 @@ all: server client
 
 objFolder:
 	mkdir -p obj
-
-obj/%_test.o: test/%.c | objFolder
-	$(CC) $< -o $@ -c $(FLAGS)
 
 obj/%.o: src/%.c | objFolder
 	$(CC) $< -o $@ -c $(FLAGS)
