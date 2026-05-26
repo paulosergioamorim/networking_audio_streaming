@@ -1,5 +1,5 @@
-#ifndef EVENT_H
-#define EVENT_H
+#ifndef PACKETS_H
+#define PACKETS_H
 
 #include <sys/time.h>
 

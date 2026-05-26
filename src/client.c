@@ -6,6 +6,7 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -17,31 +18,37 @@
 // libvlc_media_player_t *vlc_mp;
 // libvlc_media_t *vlc_media;
 
+typedef struct {
+    int tcp_sock;
+    int udp_sock;
+    // libvlc_instance_t *vlc_instance;
+    // libvlc_media_player_t *vlc_mp;
+    // libvlc_media_t *vlc_media;
+} Audio_Client;
+
+int audio_client_init(Audio_Client *c, const char *server_addr, int tcp_port, int udp_port);
+
+int audio_client_create_tcp_socket(const char *server_addr, int port);
+
+int audio_client_create_udp_socket(const char *server_addr, int port);
+
+void audio_client_destroy(Audio_Client *c);
+
 int main(int argc, char **argv) {
-    if (signals_sigint_sigaction() == -1) {
+    Audio_Client c;
+    int tcp_port = atoi(argv[2]);
+    int udp_port = atoi(argv[3]);
+
+    if (tcp_port == 0 || udp_port == 0) {
+        fprintf(stderr,
+                "Args Error!\nCommand help: ./client <server-ip-address> <server-tcp_port> <server-udp_port>\n");
         return 1;
     }
 
-    // vlc_instance = libvlc_new(0, NULL);
-    // vlc_media = libvlc_media_new_path(vlc_instance, "./audios/chelonia.mp4");
-    // vlc_mp = libvlc_media_player_new_from_media(vlc_media);
-    // libvlc_media_player_play(vlc_mp);
+    int ok = audio_client_init(&c, argv[1], tcp_port, udp_port);
 
-    int tcpfd = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (tcpfd == -1) {
-        fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
-        return 1;
-    }
-
-    struct sockaddr_in saddr = {0};
-    saddr.sin_family = AF_INET;
-    saddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    saddr.sin_port = htons(8000);
-
-    if (connect(tcpfd, (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
-        fprintf(stderr, "Failed to connect socket: %s\n", strerror(errno));
-        close(tcpfd);
+    if (!ok) {
+        audio_client_destroy(&c);
         return 1;
     }
 
@@ -90,13 +97,13 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        int wr = send(tcpfd, &req, sizeof(req), MSG_NOSIGNAL);
+        int wr = send(c.tcp_sock, &req, sizeof(req), MSG_NOSIGNAL);
         if (wr == -1) {
             perror("send");
             break;
         }
 
-        int br = recv(tcpfd, &res, sizeof(res), 0);
+        int br = recv(c.tcp_sock, &res, sizeof(res), 0);
 
         if (br == -1) {
             perror("recv");
@@ -111,7 +118,7 @@ int main(int argc, char **argv) {
         if (res.kind == RES_LIST_CONTINUE) {
             do {
                 printf("%s\n", res.buf);
-                int br = recv(tcpfd, &res, sizeof(res), 0);
+                int br = recv(c.tcp_sock, &res, sizeof(res), 0);
 
                 if (br == -1) {
                     perror("recv");
@@ -122,10 +129,76 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (close(tcpfd) == -1) {
-        fprintf(stderr, "Failed to close socket: %s\n", strerror(errno));
-        return 1;
+    audio_client_destroy(&c);
+    return 0;
+}
+
+int audio_client_init(Audio_Client *c, const char *server_addr, int tcp_port, int udp_port) {
+    if (signals_sigint_sigaction() == -1) {
+        return 0;
     }
 
-    return 0;
+    c->tcp_sock = audio_client_create_tcp_socket(server_addr, tcp_port);
+
+    if (c->tcp_sock == -1) {
+        return 0;
+    }
+
+    c->udp_sock = audio_client_create_udp_socket(server_addr, udp_port);
+
+    if (c->udp_sock == -1) {
+        return 0;
+    }
+
+    return 1;
+}
+
+int audio_client_create_tcp_socket(const char *server_addr, int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd == -1) {
+        fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    struct sockaddr_in srv_addr = {0};
+    srv_addr.sin_family = AF_INET;
+    srv_addr.sin_addr.s_addr = inet_addr(server_addr);
+    srv_addr.sin_port = htons(port);
+
+    if (connect(fd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) == -1) {
+        fprintf(stderr, "Failed to connect socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return fd;
+}
+
+int audio_client_create_udp_socket(const char *server_addr, int port) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (fd == -1) {
+        fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    struct sockaddr_in srv_addr = {0};
+    srv_addr.sin_family = AF_INET;
+    srv_addr.sin_addr.s_addr = inet_addr(server_addr);
+    srv_addr.sin_port = htons(port);
+
+    /**
+     * TODO: CRIAR ALGUM MECANISMO DE ACK PARA O UDP SERVER CONHECER O UDP CLIENT
+     */
+
+    return fd;
+}
+
+void audio_client_destroy(Audio_Client *c) {
+    if (c->tcp_sock > 0) {
+        close(c->tcp_sock);
+    }
+    if (c->udp_sock > 0) {
+        close(c->udp_sock);
+    }
 }
