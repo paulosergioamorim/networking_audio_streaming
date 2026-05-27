@@ -26,7 +26,8 @@ typedef struct {
     // libvlc_media_t *vlc_media;
 } Audio_Client;
 
-int audio_client_init(Audio_Client *c, const char *server_addr, int tcp_port, int udp_port);
+int audio_client_init(Audio_Client *c, const char *client_addr, int client_udp_port, const char *server_addr,
+                      int server_tcp_port, int server_udp_port);
 
 int audio_client_create_tcp_socket(const char *server_addr, int port);
 
@@ -36,16 +37,26 @@ void audio_client_destroy(Audio_Client *c);
 
 int main(int argc, char **argv) {
     Audio_Client c;
-    int tcp_port = atoi(argv[2]);
-    int udp_port = atoi(argv[3]);
 
-    if (tcp_port == 0 || udp_port == 0) {
-        fprintf(stderr,
-                "Args Error!\nCommand help: ./client <server-ip-address> <server-tcp_port> <server-udp_port>\n");
+    if (argc < 5) {
+        fprintf(stderr, "Args Error!\nCommand help: ./client <client-ip-address> <client-udp-port> <server-ip-address> "
+                        "<server-tcp_port> <server-udp_port>\n");
         return 1;
     }
 
-    int ok = audio_client_init(&c, argv[1], tcp_port, udp_port);
+    const char *client_ip_addr = argv[1];
+    int client_udp_port = atoi(argv[2]);
+    const char *server_ip_addr = argv[3];
+    int server_tcp_port = atoi(argv[4]);
+    int server_udp_port = atoi(argv[5]);
+
+    if (client_udp_port == 0 || server_tcp_port == 0 || server_udp_port == 0) {
+        fprintf(stderr, "Args Error!\nCommand help: ./client <client-ip-address> <client-udp-port> <server-ip-address> "
+                        "<server-tcp_port> <server-udp_port>\n");
+        return 1;
+    }
+
+    int ok = audio_client_init(&c, client_ip_addr, client_udp_port, server_ip_addr, server_tcp_port, server_udp_port);
 
     if (!ok) {
         audio_client_destroy(&c);
@@ -133,22 +144,37 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-int audio_client_init(Audio_Client *c, const char *server_addr, int tcp_port, int udp_port) {
+int audio_client_init(Audio_Client *c, const char *client_addr, int client_udp_port, const char *server_addr,
+                      int server_tcp_port, int server_udp_port) {
+    *c = (Audio_Client){0};
+
     if (signals_sigint_sigaction() == -1) {
         return 0;
     }
 
-    c->tcp_sock = audio_client_create_tcp_socket(server_addr, tcp_port);
+    c->udp_sock = audio_client_create_udp_socket(server_addr, server_udp_port);
+
+    if (c->udp_sock == -1) {
+        return 0;
+    }
+
+    struct sockaddr_in sockaddr = {0}; // udp socket address for binding
+    sockaddr.sin_family = AF_INET;
+    sockaddr.sin_addr.s_addr = inet_addr(client_addr);
+    sockaddr.sin_port = htons(client_udp_port);
+
+    if (bind(c->udp_sock, (struct sockaddr *)&sockaddr, sizeof(sockaddr)) == -1) {
+        fprintf(stderr, "Failed to bind socket: %s\n", strerror(errno));
+        return 0;
+    }
+
+    c->tcp_sock = audio_client_create_tcp_socket(server_addr, server_tcp_port);
 
     if (c->tcp_sock == -1) {
         return 0;
     }
 
-    c->udp_sock = audio_client_create_udp_socket(server_addr, udp_port);
-
-    if (c->udp_sock == -1) {
-        return 0;
-    }
+    send(c->tcp_sock, &sockaddr, sizeof(sockaddr), 0);
 
     return 1;
 }
@@ -179,18 +205,6 @@ int audio_client_create_udp_socket(const char *server_addr, int port) {
 
     if (fd == -1) {
         fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
-        return -1;
-    }
-
-    struct sockaddr_in sockaddr = {0};
-    sockaddr.sin_family = AF_INET;
-    sockaddr.sin_addr.s_addr = inet_addr(server_addr);
-    sockaddr.sin_port = htons(port);
-
-    int wr = sendto(fd, NULL, 0, 0, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
-
-    if (wr == -1) {
-        fprintf(stderr, "Failed to reach udp server: %s\n", strerror(errno));
         return -1;
     }
 

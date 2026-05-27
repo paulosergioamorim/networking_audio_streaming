@@ -18,8 +18,7 @@
 #define AUDIODIR "./audios"
 
 typedef struct {
-    struct sockaddr_in addr;
-    socklen_t addrlen;
+    struct sockaddr_in addr; // udp sockaddr
     size_t offset;
     int playing; // is streaming?
     int fd;
@@ -64,32 +63,28 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int nfds = 0;
+    int N = 0;
     struct epoll_event events[MAX_EVENTS];
     struct epoll_event ev;
-    struct sockaddr_in new_addr = {0};
-    socklen_t addrlen = 0;
-    Message req;
-    Message res;
 
     while (!signaled) {
-        nfds = epoll_wait(s.epoll_fd, events, MAX_EVENTS, -1);
+        N = epoll_wait(s.epoll_fd, events, MAX_EVENTS, -1);
 
-        if (nfds & EINTR) {
+        if (N & EINTR) {
             continue;
         }
 
-        if (nfds == -1) {
+        if (N == -1) {
             perror("epoll_wait");
             audio_server_destroy(&s);
             return 1;
         }
 
-        for (int i = 0; i < nfds; i++) {
-            int sockfd = events[i].data.fd;
+        for (int i = 0; i < N; i++) {
+            int event_sock = events[i].data.fd;
 
-            if (sockfd == s.tcp_sock) {
-                int conn_sock = accept(s.tcp_sock, (struct sockaddr *)&new_addr, &addrlen);
+            if (event_sock == s.tcp_sock) {
+                int conn_sock = accept(s.tcp_sock, NULL, NULL);
                 printf("Accept connection on fd %d\n", conn_sock);
 
                 if (conn_sock == -1) {
@@ -107,13 +102,22 @@ int main(int argc, char **argv) {
                     return 1;
                 }
 
+                Connection_State state = {0};
+                int br = recv(conn_sock, &state.addr, sizeof(state.addr), MSG_NOSIGNAL);
+
+                if (br == -1) {
+                    perror("recv sockaddr");
+                    close(conn_sock);
+                    continue;
+                }
+
                 hmput(s.conns, conn_sock, (Connection_State){0});
                 continue;
             } // the client has connected in the tcp socket
 
-            memset(&req, 0, sizeof(req));
-            memset(&res, 0, sizeof(res));
-            int ok = recv(sockfd, &req, sizeof(req), 0);
+            Message req = {0};
+            Message res = {0};
+            int ok = recv(event_sock, &req, sizeof(req), 0);
 
             if (ok == -1) {
                 perror("recv");
@@ -121,34 +125,42 @@ int main(int argc, char **argv) {
             }
 
             if (ok == 0) {
-                printf("Closing connection fd %d\n", sockfd);
+                printf("Closing connection fd %d\n", event_sock);
 
-                if (epoll_ctl(s.epoll_fd, EPOLL_CTL_DEL, sockfd, NULL) == -1) {
+                if (epoll_ctl(s.epoll_fd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
                     perror("epoll_ctl: conn");
                     audio_server_destroy(&s);
                     return 1;
                 }
 
-                close(sockfd);
-                hmdel(s.conns, sockfd);
+                close(event_sock);
+                hmdel(s.conns, event_sock);
                 continue;
             } // the client has closed the tcp socket
 
             if (req.kind == REQ_LIST) {
                 DIR *dir = opendir(AUDIODIR);
+                if (dir == NULL) {
+                    res.kind = RES_LIST_END;
+                    memset(res.buf, 0, sizeof(res.buf));
+                    send(event_sock, &res, sizeof(res), 0);
+                    closedir(dir);
+                    continue;
+                }
+
                 struct dirent *de;
 
                 while ((de = readdir(dir)) != NULL) {
                     if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
                         res.kind = RES_LIST_CONTINUE;
                         strcpy(res.buf, de->d_name);
-                        send(sockfd, &res, sizeof(res), 0);
+                        send(event_sock, &res, sizeof(res), 0);
                     }
                 }
 
                 res.kind = RES_LIST_END;
                 memset(res.buf, 0, sizeof(res.buf));
-                send(sockfd, &res, sizeof(res), 0);
+                send(event_sock, &res, sizeof(res), 0);
                 closedir(dir);
                 continue;
             }
@@ -160,23 +172,23 @@ int main(int argc, char **argv) {
 
                 if (fd == -1 && errno == ENOENT) {
                     res.kind = RES_START_NO_FILE;
-                    send(sockfd, &res, sizeof(res), 0);
+                    send(event_sock, &res, sizeof(res), 0);
                 }
 
-                Connections_State *state = hmgetp(s.conns, sockfd);
+                Connections_State *state = hmgetp(s.conns, event_sock);
                 state->value.fd = fd;
                 res.kind = RES_START_OK;
                 strcat(res.buf, "START OK");
-                send(sockfd, &res, sizeof(res), 0);
+                send(event_sock, &res, sizeof(res), 0);
                 continue;
             }
             if (req.kind == REQ_STOP) {
-                Connections_State *state = hmgetp(s.conns, sockfd);
+                Connections_State *state = hmgetp(s.conns, event_sock);
                 state->value.playing = 0;
                 continue;
             }
             if (req.kind == REQ_RESUME) {
-                Connections_State *state = hmgetp(s.conns, sockfd);
+                Connections_State *state = hmgetp(s.conns, event_sock);
                 state->value.playing = 1;
                 continue;
             }
@@ -262,7 +274,7 @@ int audio_server_create_udp_socket(const char *addr, int port) {
 }
 
 int audio_server_init(Audio_Server *s, const char *addr, int tcp_port, int udp_port) {
-    s->conns = NULL;
+    *s = (Audio_Server){0};
 
     if (signals_sigint_sigaction() == -1) {
         return 0;
