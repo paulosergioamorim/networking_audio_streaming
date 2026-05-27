@@ -182,14 +182,17 @@ int audio_client_create_udp_socket(const char *server_addr, int port) {
         return -1;
     }
 
-    struct sockaddr_in srv_addr = {0};
-    srv_addr.sin_family = AF_INET;
-    srv_addr.sin_addr.s_addr = inet_addr(server_addr);
-    srv_addr.sin_port = htons(port);
+    struct sockaddr_in sockaddr = {0};
+    sockaddr.sin_family = AF_INET;
+    sockaddr.sin_addr.s_addr = inet_addr(server_addr);
+    sockaddr.sin_port = htons(port);
 
-    /**
-     * TODO: CRIAR ALGUM MECANISMO DE ACK PARA O UDP SERVER CONHECER O UDP CLIENT
-     */
+    int wr = sendto(fd, NULL, 0, 0, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
+
+    if (wr == -1) {
+        fprintf(stderr, "Failed to reach udp server: %s\n", strerror(errno));
+        return -1;
+    }
 
     return fd;
 }

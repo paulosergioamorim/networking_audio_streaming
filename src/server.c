@@ -5,16 +5,11 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <netinet/in.h>
-#include <pthread.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <sys/signalfd.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #define STB_DS_IMPLEMENTATION
@@ -79,6 +74,10 @@ int main(int argc, char **argv) {
 
     while (!signaled) {
         nfds = epoll_wait(s.epoll_fd, events, MAX_EVENTS, -1);
+
+        if (nfds & EINTR) {
+            continue;
+        }
 
         if (nfds == -1) {
             perror("epoll_wait");
@@ -189,7 +188,7 @@ int main(int argc, char **argv) {
 }
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
-    struct sockaddr_in saddr;
+    struct sockaddr_in sockaddr;
     int fd, ret_val;
 
     /* Step1: create a TCP socket */
@@ -206,12 +205,12 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     }
 
     /* Initialize the socket address structure */
-    saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(port);
-    saddr.sin_addr.s_addr = inet_addr(addr);
+    sockaddr.sin_family = AF_INET;
+    sockaddr.sin_port = htons(port);
+    sockaddr.sin_addr.s_addr = inet_addr(addr);
 
     /* Step2: bind the socket to port <port> on the local host */
-    ret_val = bind(fd, (struct sockaddr *)&saddr, sizeof(struct sockaddr_in));
+    ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
 
     if (ret_val != 0) {
         fprintf(stderr, "bind failed [%s]\n", strerror(errno));
@@ -230,7 +229,7 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
 }
 
 int audio_server_create_udp_socket(const char *addr, int port) {
-    struct sockaddr_in saddr;
+    struct sockaddr_in sockaddr;
     int fd, ret_val;
 
     /* Step1: create a UDP socket */
@@ -247,12 +246,12 @@ int audio_server_create_udp_socket(const char *addr, int port) {
     }
 
     /* Initialize the socket address structure */
-    saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(port);
-    saddr.sin_addr.s_addr = inet_addr(addr);
+    sockaddr.sin_family = AF_INET;
+    sockaddr.sin_port = htons(port);
+    sockaddr.sin_addr.s_addr = inet_addr(addr);
 
-    /* Step2: bind the socket to port <port> on the local host */
-    ret_val = bind(fd, (struct sockaddr *)&saddr, sizeof(struct sockaddr_in));
+    /* Step2: bind the socket to port <port> on the <addr> */
+    ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
 
     if (ret_val != 0) {
         fprintf(stderr, "bind failed [%s]\n", strerror(errno));
