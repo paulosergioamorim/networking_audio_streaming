@@ -36,6 +36,8 @@ size_t queue_dequeue(Queue *q, unsigned char *dest, size_t len);
  */
 void queue_clear(Queue *q);
 
+void queue_abort(Queue *q);
+
 /**
  * @brief Destroy <q>. Free resources and set <q> to {0}
  */

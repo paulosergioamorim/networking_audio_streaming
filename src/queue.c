@@ -45,8 +45,13 @@ int queue_init(Queue *q, size_t cap) {
 void queue_enqueue(Queue *q, unsigned char *src, size_t len) {
     pthread_mutex_lock(&q->mu);
 
-    while (q->count + len > q->cap) {
+    while (q->count + len > q->cap && q->is_active) {
         pthread_cond_wait(&q->cond_full, &q->mu);
+    }
+
+    if (!q->is_active) {
+        pthread_mutex_unlock(&q->mu);
+        return;
     }
 
     for (size_t i = 0; i < len; i++) {
@@ -66,7 +71,7 @@ size_t queue_dequeue(Queue *q, unsigned char *dest, size_t len) {
         pthread_cond_wait(&q->cond_empty, &q->mu);
     }
 
-    if (!q->is_active && q->count == 0) {
+    if (!q->is_active) {
         pthread_mutex_unlock(&q->mu);
         return 0;
     }
@@ -92,19 +97,27 @@ void queue_clear(Queue *q) {
     pthread_mutex_unlock(&q->mu);
 }
 
-void queue_destroy(Queue *q) {
+void queue_abort(Queue *q) {
     pthread_mutex_lock(&q->mu);
     q->is_active = 0;
     pthread_cond_broadcast(&q->cond_empty);
     pthread_cond_broadcast(&q->cond_full);
+    pthread_mutex_unlock(&q->mu);
+}
+
+void queue_destroy(Queue *q) {
+    pthread_mutex_lock(&q->mu);
 
     if (q->buf) {
         free(q->buf);
+        q->buf = NULL;
     }
 
     pthread_mutex_unlock(&q->mu);
+
     pthread_mutex_destroy(&q->mu);
     pthread_cond_destroy(&q->cond_empty);
     pthread_cond_destroy(&q->cond_full);
+
     *q = (Queue){0};
 }
