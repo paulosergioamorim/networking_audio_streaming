@@ -11,6 +11,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
@@ -34,9 +35,16 @@ typedef struct {
     int udp_sock;
     int epoll_fd;
     Connections_State *conns;
+    pthread_mutex_t conns_mutex;
 } Audio_Server;
 
+
 #define MAX_EVENTS 10
+
+
+void audio_server_transmit_packet(Connection_State* connection_state, int udp_sock);
+
+void* audio_server_streaming_thread(void* connections_state); 
 
 int audio_server_create_tcp_socket(const char *addr, int port);
 
@@ -66,6 +74,10 @@ int main(int argc, char **argv) {
     int N = 0;
     struct epoll_event events[MAX_EVENTS];
     struct epoll_event ev;
+
+
+    pthread_t udp_thread;
+    pthread_create(&udp_thread, NULL, audio_server_streaming_thread, &s); 
 
     while (!signaled) {
         N = epoll_wait(s.epoll_fd, events, MAX_EVENTS, -1);
@@ -111,7 +123,10 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                hmput(s.conns, conn_sock, (Connection_State){0});
+                // hmput(s.conns, conn_sock, (Connection_State){0});
+                pthread_mutex_lock(&s.conns_mutex);
+                hmput(s.conns, conn_sock, state);
+                pthread_mutex_unlock(&s.conns_mutex);
                 continue;
             } // the client has connected in the tcp socket
 
@@ -134,7 +149,9 @@ int main(int argc, char **argv) {
                 }
 
                 close(event_sock);
+                pthread_mutex_lock(&s.conns_mutex);
                 hmdel(s.conns, event_sock);
+                pthread_mutex_unlock(&s.conns_mutex);
                 continue;
             } // the client has closed the tcp socket
 
@@ -165,7 +182,7 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (req.kind == REQ_START) {
-                char *filename = req.buf + sizeof("/start ") - 1;
+                char *filename = req.buf;
                 char fullname[255] = AUDIODIR "/";
                 strncat(fullname, filename, sizeof(fullname) - sizeof(AUDIODIR "/"));
                 int fd = open(fullname, O_RDONLY);
@@ -173,23 +190,34 @@ int main(int argc, char **argv) {
                 if (fd == -1 && errno == ENOENT) {
                     res.kind = RES_START_NO_FILE;
                     send(event_sock, &res, sizeof(res), 0);
+                    continue;
                 }
-
+                pthread_mutex_lock(&s.conns_mutex);
                 Connections_State *state = hmgetp(s.conns, event_sock);
+                state->value.offset = 0;
                 state->value.fd = fd;
+                state->value.playing = 1;
+                pthread_mutex_unlock(&s.conns_mutex);
+
                 res.kind = RES_START_OK;
                 strcat(res.buf, "START OK");
                 send(event_sock, &res, sizeof(res), 0);
+                //tratar musica nova apos stop
+            
                 continue;
             }
             if (req.kind == REQ_STOP) {
+                pthread_mutex_lock(&s.conns_mutex);
                 Connections_State *state = hmgetp(s.conns, event_sock);
                 state->value.playing = 0;
+                pthread_mutex_unlock(&s.conns_mutex);
                 continue;
             }
             if (req.kind == REQ_RESUME) {
+                pthread_mutex_lock(&s.conns_mutex);
                 Connections_State *state = hmgetp(s.conns, event_sock);
                 state->value.playing = 1;
+                pthread_mutex_unlock(&s.conns_mutex);
                 continue;
             }
         }
@@ -198,6 +226,61 @@ int main(int argc, char **argv) {
     audio_server_destroy(&s);
     return 0;
 }
+
+
+void audio_server_transmit_packet(Connection_State* c,  int udp_sock){
+
+    Audio_Stream packet = {0};
+
+    if (lseek(c->fd, c->offset, SEEK_SET) < 0) {
+        perror("lseek");
+        return;
+    }
+
+    ssize_t bytes_read = read(c->fd, packet.buf, AUDIO_STREAM_SIZE);
+
+    if (bytes_read == -1) {
+        perror("read");
+        return;
+    }
+
+    if (bytes_read == 0) {
+        c->playing = 0;
+        c->offset = 0; 
+        return;
+    }
+
+    packet.seq = c->offset / AUDIO_STREAM_SIZE; 
+    gettimeofday(&packet.tv, NULL);
+
+    if (sendto(udp_sock, &packet, sizeof(packet), 0, (struct sockaddr*)&c->addr, sizeof(c->addr)) < 0) {
+        perror("sendto");
+    } else {
+        c->offset += bytes_read;
+    }
+}
+
+
+void* audio_server_streaming_thread(void* audio_server){
+
+    // printf("Create thread\n");
+    Audio_Server* s = (Audio_Server*)audio_server;
+
+    while (1){
+        pthread_mutex_lock(&s->conns_mutex);
+        int n_conns = hmlen(s->conns);
+        for (int i = 0; i < n_conns; i++) {
+            Connection_State* c = &s->conns[i].value;
+            // printf("%d", c->playing);
+            if (c->playing == 1) {               
+                audio_server_transmit_packet(c, s->udp_sock); 
+            }
+        }
+        pthread_mutex_unlock(&s->conns_mutex);
+    }
+
+}
+
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
     struct sockaddr_in sockaddr;
@@ -279,6 +362,9 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port, int udp_p
     if (signals_sigint_sigaction() == -1) {
         return 0;
     }
+    
+    pthread_mutex_init(&s->conns_mutex, NULL);
+
 
     s->tcp_sock = audio_server_create_tcp_socket(addr, tcp_port);
 
@@ -322,7 +408,7 @@ void audio_server_destroy(Audio_Server *s) {
     }
 
     hmfree(s->conns);
-
+    pthread_mutex_destroy(&s->conns_mutex);
     if (s->udp_sock > 0) {
         close(s->udp_sock);
     }
