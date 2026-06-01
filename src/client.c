@@ -80,7 +80,6 @@ int main(int argc, char **argv) {
     const int MAX_EVENTS = 10;
     int N = 0;
     struct epoll_event events[MAX_EVENTS];
-    struct epoll_event ev;
 
     while (!signaled) {
         N = epoll_wait(c.epollfd, events, MAX_EVENTS, -1);
