@@ -50,14 +50,21 @@ void audio_server_destroy(Audio_Server *s);
 
 int main(int argc, char **argv) {
     Audio_Server s;
-    int control_port = atoi(argv[2]);
 
-    if (control_port == 0) {
-        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <control_port>\n");
+    if (argc < 3) {
+        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
         return 1;
     }
 
-    int ok = audio_server_init(&s, argv[1], control_port);
+    const char *ip_addr = argv[1];
+    int port = atoi(argv[2]);
+
+    if (port == 0) {
+        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
+        return 1;
+    }
+
+    int ok = audio_server_init(&s, ip_addr, port);
 
     if (!ok) {
         audio_server_destroy(&s);
@@ -191,6 +198,8 @@ int main(int argc, char **argv) {
                     state->value.playing = 0;
                 }
                 pthread_mutex_unlock(&s.conns_mutex);
+                res.kind = RES_STOP;
+                send(event_sock, &res, sizeof(res), 0);
                 continue;
             }
             if (req.kind == REQ_RESUME) {
@@ -200,6 +209,8 @@ int main(int argc, char **argv) {
                     state->value.playing = 1;
                 }
                 pthread_mutex_unlock(&s.conns_mutex);
+                res.kind = RES_RESUME;
+                send(event_sock, &res, sizeof(res), 0);
                 continue;
             }
         }
@@ -246,8 +257,10 @@ void *audio_server_streaming_thread(void *audio_server) {
         for (int i = 0; i < n_conns; i++) {
             pthread_mutex_lock(&s->conns_mutex);
 
-            if (!s->conns)
+            if (!s->conns) {
+                pthread_mutex_unlock(&s->conns_mutex);
                 return NULL;
+            }
 
             Connection_State *c = &s->conns[i].value;
             if (c->playing == 1) {
@@ -255,6 +268,7 @@ void *audio_server_streaming_thread(void *audio_server) {
             }
             pthread_mutex_unlock(&s->conns_mutex);
         }
+        usleep(3000);
     }
 
     return NULL;

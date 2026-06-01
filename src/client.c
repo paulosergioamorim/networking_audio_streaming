@@ -50,27 +50,25 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
 int audio_client_create_tcp_socket(const char *server_addr, int port);
 
-int audio_client_create_udp_socket(const char *server_addr, int port);
-
 void audio_client_destroy(Audio_Client *c);
 
 int main(int argc, char **argv) {
     Audio_Client c;
 
     if (argc < 3) {
-        fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-tcp-port>\n");
+        fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-port>\n");
         return 1;
     }
 
     const char *server_ip_addr = argv[1];
-    int server_control_port = atoi(argv[2]);
+    int server_port = atoi(argv[2]);
 
-    if (server_control_port == 0) {
-        fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-tcp-port>\n");
+    if (server_port == 0) {
+        fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-port>\n");
         return 1;
     }
 
-    int ok = audio_client_init(&c, server_ip_addr, server_control_port);
+    int ok = audio_client_init(&c, server_ip_addr, server_port);
 
     if (!ok) {
         audio_client_destroy(&c);
@@ -182,6 +180,18 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                if (res.kind == RES_STOP) {
+                    c.is_playing = 0;
+                    libvlc_media_player_stop(c.vlc_mp);
+                    continue;
+                }
+
+                if (res.kind == RES_RESUME) {
+                    c.is_playing = 1;
+                    libvlc_media_player_play(c.vlc_mp);
+                    continue;
+                }
+
                 if (res.kind == RES_STREAM) {
                     queue_enqueue(&c.queue, (unsigned char *)res.buf, res.len);
                     continue;
@@ -257,17 +267,6 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
 
     if (connect(fd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) == -1) {
         fprintf(stderr, "Failed to connect socket: %s\n", strerror(errno));
-        return -1;
-    }
-
-    return fd;
-}
-
-int audio_client_create_udp_socket(const char *server_addr, int port) {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-
-    if (fd == -1) {
-        fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
         return -1;
     }
 
