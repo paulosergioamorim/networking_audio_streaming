@@ -36,6 +36,7 @@ typedef struct {
     int epoll_fd;
     Connections_State *conns;
     pthread_mutex_t conns_mutex;
+    pthread_t streaming_thread;
 } Audio_Server;
 
 void audio_server_transmit_packet(Connection_State *connection_state);
@@ -76,8 +77,7 @@ int main(int argc, char **argv) {
     struct epoll_event events[MAX_EVENTS];
     struct epoll_event ev;
 
-    pthread_t streaming_thread;
-    pthread_create(&streaming_thread, NULL, audio_server_streaming_thread, &s);
+    pthread_create(&s.streaming_thread, NULL, audio_server_streaming_thread, &s);
 
     while (!signaled) {
         N = epoll_wait(s.epoll_fd, events, MAX_EVENTS, -1);
@@ -253,14 +253,13 @@ void *audio_server_streaming_thread(void *audio_server) {
     Audio_Server *s = (Audio_Server *)audio_server;
 
     while (1) {
+        if (!s->conns) {
+            return NULL;
+        }
+
         int n_conns = hmlen(s->conns);
         for (int i = 0; i < n_conns; i++) {
             pthread_mutex_lock(&s->conns_mutex);
-
-            if (!s->conns) {
-                pthread_mutex_unlock(&s->conns_mutex);
-                return NULL;
-            }
 
             Connection_State *c = &s->conns[i].value;
             if (c->playing == 1) {
@@ -358,8 +357,9 @@ void audio_server_destroy(Audio_Server *s) {
             close(item.value.fd);
         }
     }
-    hmfree(s->conns);
+    hmfree(s->conns); // make streaming thread able to return
     pthread_mutex_unlock(&s->conns_mutex);
+    pthread_join(s->streaming_thread, NULL); // collect thread (free resources)
     pthread_mutex_destroy(&s->conns_mutex);
     if (s->tcp_sock > 0) {
         close(s->tcp_sock);
