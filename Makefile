@@ -16,7 +16,7 @@ objFolder:
 obj/%.o: src/%.c | objFolder
 	$(CC) $< -o $@ -c $(FLAGS)
 
-server: obj/server.o obj/token.o obj/signals.o obj/suffix.o
+server: obj/server.o obj/signals.o obj/suffix.o
 	$(CC) $^ -o $@ $(FLAGS) -lpthread
 
 client: obj/client.o obj/signals.o obj/queue.o
