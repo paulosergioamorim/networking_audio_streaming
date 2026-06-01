@@ -1,12 +1,13 @@
 #ifndef PACKETS_H
 #define PACKETS_H
 
+#include <stddef.h>
 #include <sys/time.h>
 
-#define MESSAGE_SIZE 512
-#define AUDIO_STREAM_SIZE 256
+#define MESSAGE_SIZE 4096
 
 typedef enum {
+    _,
     REQ_LIST,
     REQ_START,
     REQ_STOP,
@@ -16,18 +17,15 @@ typedef enum {
     RES_START_OK,
     RES_START_NO_FILE,
     RES_STOP,
-    RES_RESUME
+    RES_RESUME,
+    RES_STREAM
 } Message_Kind;
 
 typedef struct {
     Message_Kind kind;
+    struct timeval tv;
+    size_t len;
     char buf[MESSAGE_SIZE];
 } Message;
-
-typedef struct {
-    long seq;
-    struct timeval tv;
-    unsigned char buf[AUDIO_STREAM_SIZE];
-} Audio_Stream;
 
 #endif

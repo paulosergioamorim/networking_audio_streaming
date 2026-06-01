@@ -1,5 +1,5 @@
 CC 		:= gcc
-FLAGS 	:= -MMD -MP
+FLAGS 	:= -Wall
 SRC 	:= $(wildcard src/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
 DEP 	:= $(OBJ:.o=.d)
@@ -14,12 +14,12 @@ objFolder:
 	mkdir -p obj
 
 obj/%.o: src/%.c | objFolder
-	$(CC) $< -o $@ -c $(FLAGS)
+	$(CC) $< -o $@ -c $(FLAGS) -MMD -MP
 
 server: obj/server.o obj/signals.o obj/suffix.o
 	$(CC) $^ -o $@ $(FLAGS) -lpthread
 
-client: obj/client.o obj/signals.o
+client: obj/client.o obj/signals.o obj/queue.o
 	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread
 
 clean:

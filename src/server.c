@@ -5,13 +5,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
-#include <pthread.h>
 
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
@@ -19,10 +20,10 @@
 #define AUDIODIR "./audios"
 
 typedef struct {
-    struct sockaddr_in addr; // udp sockaddr
     size_t offset;
     int playing; // is streaming?
     int fd;
+    int sock;
 } Connection_State;
 
 typedef struct {
@@ -32,39 +33,39 @@ typedef struct {
 
 typedef struct {
     int tcp_sock;
-    int udp_sock;
     int epoll_fd;
     Connections_State *conns;
     pthread_mutex_t conns_mutex;
+    pthread_t streaming_thread;
 } Audio_Server;
 
+void audio_server_transmit_packet(Connection_State *connection_state);
 
-#define MAX_EVENTS 10
-
-
-void audio_server_transmit_packet(Connection_State* connection_state, int udp_sock);
-
-void* audio_server_streaming_thread(void* connections_state); 
+void *audio_server_streaming_thread(void *connections_state);
 
 int audio_server_create_tcp_socket(const char *addr, int port);
 
-int audio_server_create_udp_socket(const char *addr, int port);
-
-int audio_server_init(Audio_Server *s, const char *addr, int tcp_port, int udp_port);
+int audio_server_init(Audio_Server *s, const char *addr, int tcp_port);
 
 void audio_server_destroy(Audio_Server *s);
 
 int main(int argc, char **argv) {
     Audio_Server s;
-    int tcp_port = atoi(argv[2]);
-    int udp_port = atoi(argv[3]);
 
-    if (tcp_port == 0 || udp_port == 0) {
-        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <tcp_port> <udp_port>\n");
+    if (argc < 3) {
+        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
         return 1;
     }
 
-    int ok = audio_server_init(&s, argv[1], tcp_port, udp_port);
+    const char *ip_addr = argv[1];
+    int port = atoi(argv[2]);
+
+    if (port == 0) {
+        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
+        return 1;
+    }
+
+    int ok = audio_server_init(&s, ip_addr, port);
 
     if (!ok) {
         audio_server_destroy(&s);
@@ -72,12 +73,11 @@ int main(int argc, char **argv) {
     }
 
     int N = 0;
+    const int MAX_EVENTS = 10;
     struct epoll_event events[MAX_EVENTS];
     struct epoll_event ev;
 
-
-    pthread_t udp_thread;
-    pthread_create(&udp_thread, NULL, audio_server_streaming_thread, &s); 
+    pthread_create(&s.streaming_thread, NULL, audio_server_streaming_thread, &s);
 
     while (!signaled) {
         N = epoll_wait(s.epoll_fd, events, MAX_EVENTS, -1);
@@ -97,63 +97,44 @@ int main(int argc, char **argv) {
 
             if (event_sock == s.tcp_sock) {
                 int conn_sock = accept(s.tcp_sock, NULL, NULL);
-                printf("Accept connection on fd %d\n", conn_sock);
 
                 if (conn_sock == -1) {
-                    perror("accept");
-                    audio_server_destroy(&s);
-                    return 1;
+                    continue;
                 }
 
                 ev.events = EPOLLIN;
                 ev.data.fd = conn_sock;
-
-                if (epoll_ctl(s.epoll_fd, EPOLL_CTL_ADD, conn_sock, &ev) == -1) {
-                    perror("epoll_ctl: conn_sock");
-                    audio_server_destroy(&s);
-                    return 1;
-                }
+                epoll_ctl(s.epoll_fd, EPOLL_CTL_ADD, conn_sock, &ev);
 
                 Connection_State state = {0};
-                int br = recv(conn_sock, &state.addr, sizeof(state.addr), MSG_NOSIGNAL);
+                state.sock = conn_sock;
 
-                if (br == -1) {
-                    perror("recv sockaddr");
-                    close(conn_sock);
-                    continue;
-                }
-
-                // hmput(s.conns, conn_sock, (Connection_State){0});
                 pthread_mutex_lock(&s.conns_mutex);
                 hmput(s.conns, conn_sock, state);
                 pthread_mutex_unlock(&s.conns_mutex);
                 continue;
-            } // the client has connected in the tcp socket
+            }
 
             Message req = {0};
             Message res = {0};
-            int ok = recv(event_sock, &req, sizeof(req), 0);
+            ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_WAITALL);
 
-            if (ok == -1) {
+            if (bytes_readed == -1) {
                 perror("recv");
                 break;
-            }
-
-            if (ok == 0) {
-                printf("Closing connection fd %d\n", event_sock);
-
-                if (epoll_ctl(s.epoll_fd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
-                    perror("epoll_ctl: conn");
-                    audio_server_destroy(&s);
-                    return 1;
-                }
-
-                close(event_sock);
+            } else if (bytes_readed == 0) {
                 pthread_mutex_lock(&s.conns_mutex);
+                Connections_State *state = hmgetp(s.conns, event_sock);
+                if (state != NULL) {
+                    if (state->value.fd > 0) {
+                        close(state->value.fd);
+                    }
+                }
                 hmdel(s.conns, event_sock);
                 pthread_mutex_unlock(&s.conns_mutex);
-                continue;
-            } // the client has closed the tcp socket
+                epoll_ctl(s.epoll_fd, EPOLL_CTL_DEL, event_sock, &ev);
+                close(event_sock);
+            }
 
             if (req.kind == REQ_LIST) {
                 DIR *dir = opendir(AUDIODIR);
@@ -187,37 +168,49 @@ int main(int argc, char **argv) {
                 strncat(fullname, filename, sizeof(fullname) - sizeof(AUDIODIR "/"));
                 int fd = open(fullname, O_RDONLY);
 
-                if (fd == -1 && errno == ENOENT) {
+                if (fd == -1) {
                     res.kind = RES_START_NO_FILE;
                     send(event_sock, &res, sizeof(res), 0);
                     continue;
                 }
+
                 pthread_mutex_lock(&s.conns_mutex);
                 Connections_State *state = hmgetp(s.conns, event_sock);
-                state->value.offset = 0;
-                state->value.fd = fd;
-                state->value.playing = 1;
+                if (state != NULL) {
+                    state->value.offset = 0;
+                    if (state->value.fd > 0) {
+                        close(state->value.fd);
+                    }
+                    state->value.fd = fd;
+                    state->value.playing = 1;
+                }
                 pthread_mutex_unlock(&s.conns_mutex);
 
                 res.kind = RES_START_OK;
-                strcat(res.buf, "START OK");
                 send(event_sock, &res, sizeof(res), 0);
-                //tratar musica nova apos stop
-            
+
                 continue;
             }
             if (req.kind == REQ_STOP) {
                 pthread_mutex_lock(&s.conns_mutex);
                 Connections_State *state = hmgetp(s.conns, event_sock);
-                state->value.playing = 0;
+                if (state != NULL) {
+                    state->value.playing = 0;
+                }
                 pthread_mutex_unlock(&s.conns_mutex);
+                res.kind = RES_STOP;
+                send(event_sock, &res, sizeof(res), 0);
                 continue;
             }
             if (req.kind == REQ_RESUME) {
                 pthread_mutex_lock(&s.conns_mutex);
                 Connections_State *state = hmgetp(s.conns, event_sock);
-                state->value.playing = 1;
+                if (state != NULL) {
+                    state->value.playing = 1;
+                }
                 pthread_mutex_unlock(&s.conns_mutex);
+                res.kind = RES_RESUME;
+                send(event_sock, &res, sizeof(res), 0);
                 continue;
             }
         }
@@ -227,60 +220,58 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-
-void audio_server_transmit_packet(Connection_State* c,  int udp_sock){
-
-    Audio_Stream packet = {0};
+void audio_server_transmit_packet(Connection_State *c) {
+    Message res = {0};
+    res.kind = RES_STREAM;
 
     if (lseek(c->fd, c->offset, SEEK_SET) < 0) {
-        perror("lseek");
         return;
     }
 
-    ssize_t bytes_read = read(c->fd, packet.buf, AUDIO_STREAM_SIZE);
+    gettimeofday(&res.tv, NULL);
+    ssize_t bytes_read = read(c->fd, &res.buf, sizeof(res.buf));
 
-    if (bytes_read == -1) {
-        perror("read");
-        return;
-    }
-
-    if (bytes_read == 0) {
+    if (bytes_read <= 0) {
         c->playing = 0;
-        c->offset = 0; 
+        c->offset = 0;
         return;
     }
 
-    packet.seq = c->offset / AUDIO_STREAM_SIZE; 
-    gettimeofday(&packet.tv, NULL);
+    res.len = bytes_read;
+    ssize_t sent = send(c->sock, &res, sizeof(Message), MSG_NOSIGNAL | MSG_DONTWAIT);
 
-    if (sendto(udp_sock, &packet, sizeof(packet), 0, (struct sockaddr*)&c->addr, sizeof(c->addr)) < 0) {
-        perror("sendto");
-    } else {
+    if (sent == sizeof(Message)) {
         c->offset += bytes_read;
+    } else if (sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return;
+    } else {
+        c->playing = 0;
     }
 }
 
+void *audio_server_streaming_thread(void *audio_server) {
+    Audio_Server *s = (Audio_Server *)audio_server;
 
-void* audio_server_streaming_thread(void* audio_server){
+    while (1) {
+        if (!s->conns) {
+            return NULL;
+        }
 
-    // printf("Create thread\n");
-    Audio_Server* s = (Audio_Server*)audio_server;
-
-    while (1){
-        pthread_mutex_lock(&s->conns_mutex);
         int n_conns = hmlen(s->conns);
         for (int i = 0; i < n_conns; i++) {
-            Connection_State* c = &s->conns[i].value;
-            // printf("%d", c->playing);
-            if (c->playing == 1) {               
-                audio_server_transmit_packet(c, s->udp_sock); 
+            pthread_mutex_lock(&s->conns_mutex);
+
+            Connection_State *c = &s->conns[i].value;
+            if (c->playing == 1) {
+                audio_server_transmit_packet(c);
             }
+            pthread_mutex_unlock(&s->conns_mutex);
         }
-        pthread_mutex_unlock(&s->conns_mutex);
+        usleep(3000);
     }
 
+    return NULL;
 }
-
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
     struct sockaddr_in sockaddr;
@@ -323,58 +314,18 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     return fd;
 }
 
-int audio_server_create_udp_socket(const char *addr, int port) {
-    struct sockaddr_in sockaddr;
-    int fd, ret_val;
-
-    /* Step1: create a UDP socket */
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-
-    if (fd == -1) {
-        perror("socket");
-        return -1;
-    }
-
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
-        perror("setsockopt");
-        return -1;
-    }
-
-    /* Initialize the socket address structure */
-    sockaddr.sin_family = AF_INET;
-    sockaddr.sin_port = htons(port);
-    sockaddr.sin_addr.s_addr = inet_addr(addr);
-
-    /* Step2: bind the socket to port <port> on the <addr> */
-    ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
-
-    if (ret_val != 0) {
-        fprintf(stderr, "bind failed [%s]\n", strerror(errno));
-        return -1;
-    }
-
-    return fd;
-}
-
-int audio_server_init(Audio_Server *s, const char *addr, int tcp_port, int udp_port) {
+int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     *s = (Audio_Server){0};
 
     if (signals_sigint_sigaction() == -1) {
         return 0;
     }
-    
-    pthread_mutex_init(&s->conns_mutex, NULL);
 
+    pthread_mutex_init(&s->conns_mutex, NULL);
 
     s->tcp_sock = audio_server_create_tcp_socket(addr, tcp_port);
 
     if (s->tcp_sock == -1) {
-        return 0;
-    }
-
-    s->udp_sock = audio_server_create_udp_socket(addr, udp_port);
-
-    if (s->udp_sock == -1) {
         return 0;
     }
 
@@ -398,20 +349,18 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port, int udp_p
 }
 
 void audio_server_destroy(Audio_Server *s) {
+    pthread_mutex_lock(&s->conns_mutex);
     for (int i = 0; i < hmlen(s->conns); i++) {
         Connections_State item = s->conns[i];
         close(item.key);
-
         if (item.value.fd > 0) {
             close(item.value.fd);
         }
     }
-
-    hmfree(s->conns);
+    hmfree(s->conns); // make streaming thread able to return
+    pthread_mutex_unlock(&s->conns_mutex);
+    pthread_join(s->streaming_thread, NULL); // collect thread (free resources)
     pthread_mutex_destroy(&s->conns_mutex);
-    if (s->udp_sock > 0) {
-        close(s->udp_sock);
-    }
     if (s->tcp_sock > 0) {
         close(s->tcp_sock);
     }
