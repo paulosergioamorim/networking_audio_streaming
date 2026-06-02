@@ -252,11 +252,7 @@ void audio_server_transmit_packet(Connection_State *c) {
 void *audio_server_streaming_thread(void *audio_server) {
     Audio_Server *s = (Audio_Server *)audio_server;
 
-    while (1) {
-        if (!s->conns) {
-            return NULL;
-        }
-
+    while (!signaled) {
         int n_conns = hmlen(s->conns);
         for (int i = 0; i < n_conns; i++) {
             pthread_mutex_lock(&s->conns_mutex);
