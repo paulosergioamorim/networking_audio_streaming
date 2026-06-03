@@ -1,3 +1,4 @@
+#include "logger.h"
 #include "packets.h"
 #include "queue.h"
 #include "signals.h"
@@ -16,13 +17,21 @@
 #include <vlc/vlc.h>
 
 #define MB(x) ((1 << 20) * x) // 1MB
+#define HELP_MSG                                                                                                       \
+    ("|=======================================|\n"                                                                     \
+     "| /help         -> more info            |\n"                                                                     \
+     "| /list         -> list avaliable songs |\n"                                                                     \
+     "| /start <file> -> start streaming file |\n"                                                                     \
+     "| /stop         -> stop streaming       |\n"                                                                     \
+     "| /resume       -> resume streaming     |\n"                                                                     \
+     "| /exit or ^C   -> to exit              |\n"                                                                     \
+     "|=======================================|\n")
 
 typedef struct {
     int epollfd;
-    int sock;
+    int sockfd;
     libvlc_instance_t *vlc_instance;
     libvlc_media_player_t *vlc_mp;
-    libvlc_media_t *vlc_media;
     Queue queue;
     int is_playing;
 } Audio_Client;
@@ -52,10 +61,17 @@ int audio_client_create_tcp_socket(const char *server_addr, int port);
 
 void audio_client_destroy(Audio_Client *c);
 
+void audio_client_handle_start(Audio_Client *c);
+
 void audio_client_handle_exit(Audio_Client *c);
+
+Message_Kind audio_client_parse_str_to_enum(const char *str);
 
 int main(int argc, char **argv) {
     Audio_Client c;
+
+    logger_initConsoleLogger(stdout);
+    logger_setLevel(LogLevel_DEBUG);
 
     if (argc < 3) {
         fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-port>\n");
@@ -108,113 +124,77 @@ int main(int argc, char **argv) {
                 if (ptr) {
                     *ptr = '\0';
                 }
-
                 if (*prompt == '\0') {
                     continue;
                 }
-
                 if (strcmp(prompt, "/exit") == 0) {
                     signaled = 1;
                     break;
                 }
                 if (strcmp(prompt, "/help") == 0) {
-                    printf("|=======================================|\n"
-                           "| /help         -> more info            |\n"
-                           "| /list         -> list avaliable songs |\n"
-                           "| /start <file> -> start streaming file |\n"
-                           "| /stop         -> stop streaming       |\n"
-                           "| /resume       -> resume streaming     |\n"
-                           "| /exit or ^C   -> to exit              |\n"
-                           "|=======================================|\n");
+                    printf(HELP_MSG);
                     continue;
                 }
 
-                if (strcmp(prompt, "/list") == 0) {
-                    req.kind = REQ_LIST;
-                } else if (strncmp(prompt, "/start", 6) == 0) {
-                    req.kind = REQ_START;
-                    char *filename = prompt + sizeof("/start ") - 1;
+                req.kind = audio_client_parse_str_to_enum(prompt);
+                char *filename;
+
+                switch (req.kind) {
+                case REQ_START:
+                    filename = prompt + sizeof("/start ") - 1;
                     strcpy(req.buf, filename);
-                } else if (strcmp(prompt, "/stop") == 0) {
-                    req.kind = REQ_STOP;
-                } else if (strcmp(prompt, "/resume") == 0) {
-                    req.kind = REQ_RESUME;
-                } else {
+                    break;
+                case _:
                     printf("Invalid input\n");
-                    continue;
+                    break;
+                default:
+                    break;
                 }
 
-                int wr = send(c.sock, &req, sizeof(req), MSG_NOSIGNAL);
+                int wr = send(c.sockfd, &req, sizeof(req), MSG_NOSIGNAL);
                 if (wr == -1) {
                     perror("send");
                     break;
                 }
             }
 
-            if (event_sock == c.sock) {
+            if (event_sock == c.sockfd) {
                 Message res = {0};
-                int br = recv(c.sock, &res, sizeof(res), MSG_WAITALL);
+                ssize_t ok = recv(c.sockfd, &res, sizeof(res), MSG_WAITALL);
 
-                if (br == -1) {
+                if (ok == -1) {
                     perror("recv");
                     break;
                 }
 
-                if (res.kind == RES_LIST_END) {
+                switch (res.kind) {
+                case RES_LIST_END:
                     printf("End of list\n");
-                    continue;
-                }
-
-                if (res.kind == RES_LIST_CONTINUE) {
+                    break;
+                case RES_LIST_CONTINUE:
                     printf("| %s |\n", res.buf);
-                    continue;
-                }
-
-                if (res.kind == RES_START_NO_FILE) {
+                    break;
+                case RES_START_NO_FILE:
                     printf("No audio file\n");
-                    continue;
-                }
-
-                if (res.kind == RES_START_OK) {
-                    c.is_playing = 0;
-
-                    // free all libvlc threads
-                    pthread_mutex_lock(&c.queue.mu);
-                    c.queue.is_active = 0;
-                    pthread_cond_broadcast(&c.queue.cond_empty);
-                    pthread_mutex_unlock(&c.queue.mu);
-
-                    // stop the libvlc player
-                    libvlc_media_player_stop(c.vlc_mp);
-
-                    // reset the circular queue
-                    queue_clear(&c.queue);
-
-                    // activate the queue
-                    pthread_mutex_lock(&c.queue.mu);
-                    c.queue.is_active = 1;
-                    pthread_mutex_unlock(&c.queue.mu);
-
-                    c.is_playing = 1;
-                    libvlc_media_player_play(c.vlc_mp);
-                    continue;
-                }
-
-                if (res.kind == RES_STOP) {
+                    break;
+                case RES_START_OK:
+                    audio_client_handle_start(&c);
+                    break;
+                case RES_STOP:
                     c.is_playing = 0;
                     libvlc_media_player_pause(c.vlc_mp);
-                    continue;
-                }
-
-                if (res.kind == RES_RESUME) {
+                    break;
+                case RES_RESUME:
                     c.is_playing = 1;
                     libvlc_media_player_play(c.vlc_mp);
-                    continue;
-                }
-
-                if (res.kind == RES_STREAM) {
+                    break;
+                case RES_STREAM:
                     queue_enqueue(&c.queue, (unsigned char *)res.buf, res.len);
-                    continue;
+                    break;
+                case _:
+                default:
+                    LOG_ERROR("Invalid response");
+                    break;
                 }
             }
         }
@@ -232,9 +212,9 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     sigaddset(&mask, SIGINT);
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
 
-    c->sock = audio_client_create_tcp_socket(server_addr, server_tcp_port);
+    c->sockfd = audio_client_create_tcp_socket(server_addr, server_tcp_port);
 
-    if (c->sock == -1) {
+    if (c->sockfd == -1) {
         return 0;
     }
 
@@ -246,8 +226,8 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
     epoll_ctl(c->epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev);
     ev.events = EPOLLIN;
-    ev.data.fd = c->sock;
-    epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sock, &ev);
+    ev.data.fd = c->sockfd;
+    epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sockfd, &ev);
 
     queue_init(&c->queue, MB(1));
 
@@ -259,9 +239,9 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
         return 0;
     }
 
-    c->vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
-    c->vlc_mp = libvlc_media_player_new_from_media(c->vlc_media);
-    libvlc_media_release(c->vlc_media);
+    libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
+    c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
+    libvlc_media_release(vlc_media);
 
     if (signals_sigint_sigaction() == -1) {
         return 0;
@@ -300,7 +280,6 @@ void audio_client_destroy(Audio_Client *c) {
         libvlc_media_player_stop(c->vlc_mp);
         libvlc_media_player_release(c->vlc_mp);
     }
-
     if (c->vlc_instance) {
         libvlc_release(c->vlc_instance);
     }
@@ -314,21 +293,66 @@ void audio_client_handle_exit(Audio_Client *c) {
     Message req = {0};
     Message res = {0};
     req.kind = REQ_EXIT;
-    ssize_t ok = send(c->sock, &req, sizeof(req), MSG_NOSIGNAL);
+    ssize_t ok = send(c->sockfd, &req, sizeof(req), MSG_NOSIGNAL);
 
     if (ok == -1) {
         perror("audio_client_handle_exit : send");
         return;
     }
 
-    ok = recv(c->sock, &res, sizeof(res), MSG_NOSIGNAL);
+    ok = recv(c->sockfd, &res, sizeof(res), MSG_NOSIGNAL);
 
     if (ok == -1 && errno == EPIPE) {
         perror("audio_client_handle_exit : recv");
         return;
     }
-
-    if (res.kind == REQ_EXIT && c->sock > 0) {
-        close(c->sock);
+    if (res.kind == REQ_EXIT && c->sockfd > 0) {
+        close(c->sockfd);
     }
+    if (c->epollfd > 0) {
+        close(c->epollfd);
+    }
+}
+
+Message_Kind audio_client_parse_str_to_enum(const char *str) {
+    if (strcmp(str, "/exit") == 0) {
+        return REQ_EXIT;
+    }
+    if (strcmp(str, "/list") == 0) {
+        return REQ_LIST;
+    }
+    if (strncmp(str, "/start", 6) == 0) {
+        return REQ_START;
+    }
+    if (strcmp(str, "/stop") == 0) {
+        return REQ_STOP;
+    }
+    if (strcmp(str, "/resume") == 0) {
+        return RES_RESUME;
+    }
+    return _;
+}
+
+void audio_client_handle_start(Audio_Client *c) {
+    c->is_playing = 0;
+
+    // free all libvlc threads
+    pthread_mutex_lock(&c->queue.mu);
+    c->queue.is_active = 0;
+    pthread_cond_broadcast(&c->queue.cond_empty);
+    pthread_mutex_unlock(&c->queue.mu);
+
+    // stop the libvlc player
+    libvlc_media_player_stop(c->vlc_mp);
+
+    // reset the circular queue
+    queue_clear(&c->queue);
+
+    // activate the queue
+    pthread_mutex_lock(&c->queue.mu);
+    c->queue.is_active = 1;
+    pthread_mutex_unlock(&c->queue.mu);
+
+    c->is_playing = 1;
+    libvlc_media_player_play(c->vlc_mp);
 }
