@@ -6,7 +6,9 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/limits.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,9 +36,15 @@ typedef struct {
 } Clients_State;
 
 typedef struct {
+    char *key;         // basename
+    const char *value; // path
+} Audio;
+
+typedef struct {
     int sockfd;
     int epollfd;
     Clients_State *clients;
+    Audio *audios;
     pthread_mutex_t mu;
     pthread_t streaming_thread;
 } Audio_Server;
@@ -48,6 +56,8 @@ void *audio_server_streaming_thread(void *arg);
 int audio_server_create_tcp_socket(const char *addr, int port);
 
 int audio_server_init(Audio_Server *s, const char *addr, int tcp_port);
+
+void audio_server_load_audios(Audio_Server *s);
 
 void audio_server_destroy(Audio_Server *s);
 
@@ -161,53 +171,44 @@ int main(int argc, char **argv) {
             }
 
             if (req.kind == REQ_LIST) {
-                DIR *dir = opendir(AUDIODIR);
-                if (dir == NULL) {
-                    res.kind = RES_LIST_END;
-                    memset(res.buf, 0, sizeof(res.buf));
+                res.kind = RES_LIST_CONTINUE;
+                for (int i = 0; i < shlen(s.audios); i++) {
+                    strcpy(res.buf, s.audios[i].key);
                     ssize_t ok = send(event_sock, &res, sizeof(res), 0);
                     if (ok == -1) {
                         LOG_ERROR("send() failed: %s", strerror(errno));
                     }
-                    closedir(dir);
-                    continue;
                 }
-
-                struct dirent *de;
-
-                while ((de = readdir(dir)) != NULL) {
-                    if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
-                        res.kind = RES_LIST_CONTINUE;
-                        strcpy(res.buf, de->d_name);
-                        ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                        if (ok == -1) {
-                            LOG_ERROR("send() failed: %s", strerror(errno));
-                        }
-                    }
-                }
-
                 res.kind = RES_LIST_END;
-                memset(res.buf, 0, sizeof(res.buf));
                 ssize_t ok = send(event_sock, &res, sizeof(res), 0);
                 if (ok == -1) {
                     LOG_ERROR("send() failed: %s", strerror(errno));
                 }
-                closedir(dir);
                 continue;
             }
             if (req.kind == REQ_START) {
-                char *filename = req.buf;
-                char fullname[255] = AUDIODIR "/";
-                strncat(fullname, filename, sizeof(fullname) - sizeof(AUDIODIR "/"));
-                int fd = open(fullname, O_RDONLY);
+                char *basename = req.buf;
+                ptrdiff_t idx = shgeti(s.audios, basename);
 
-                if (fd == -1) {
+                if (idx == -1) {
                     res.kind = RES_START_NO_FILE;
                     ssize_t ok = send(event_sock, &res, sizeof(res), 0);
                     if (ok == -1) {
                         LOG_ERROR("send() failed: %s", strerror(errno));
                     }
                     continue;
+                }
+
+                const char *path = s.audios[idx].value;
+                int fd = open(path, O_RDONLY);
+
+                if (fd == -1) {
+                    LOG_ERROR("Failed to open indexed file. Maybe has been deleted");
+                    res.kind = RES_START_NO_FILE;
+                    ssize_t ok = send(event_sock, &res, sizeof(res), 0);
+                    if (ok == -1) {
+                        LOG_ERROR("send() failed: %s", strerror(errno));
+                    }
                 }
 
                 pthread_mutex_lock(&s.mu);
@@ -261,7 +262,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    LOG_INFO("Shutdown server");
+    LOG_INFO("Closing server");
     audio_server_destroy(&s);
     return 0;
 }
@@ -389,6 +390,8 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
         return 0;
     }
 
+    audio_server_load_audios(s);
+
     return 1;
 }
 
@@ -411,4 +414,32 @@ void audio_server_destroy(Audio_Server *s) {
     if (s->epollfd > 0) {
         close(s->epollfd);
     }
+    shfree(s->audios); // free keys and values too
+}
+
+void audio_server_load_audios(Audio_Server *s) {
+    sh_new_strdup(s->audios); // auto strdup key
+    DIR *dir = opendir(AUDIODIR);
+
+    if (!dir) {
+        LOG_ERROR("Error to load " AUDIODIR " directory: %s", strerror(errno));
+        return;
+    }
+
+    struct dirent *de;
+
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
+            char path[NAME_MAX];
+            strcpy(path, AUDIODIR "/");
+            strcat(path, de->d_name);
+            shput(s->audios, de->d_name, path);
+        }
+    }
+
+    if (closedir(dir) == -1) {
+        LOG_ERROR("Error to close " AUDIODIR " directory: %s", strerror(errno));
+    }
+
+    LOG_INFO("Loaded audios");
 }
