@@ -61,6 +61,18 @@ void audio_server_load_audios(Audio_Server *s);
 
 void audio_server_destroy(Audio_Server *s);
 
+void audio_server_handle_accept(Audio_Server *s);
+
+void audio_server_handle_exit(Audio_Server *s, int event_sock, Message *req, Message *res);
+
+void audio_server_handle_list(Audio_Server *s, int event_sock, Message *req, Message *res);
+
+void audio_server_handle_start(Audio_Server *s, int event_sock, Message *req, Message *res);
+
+void audio_server_handle_stop(Audio_Server *s, int event_sock, Message *req, Message *res);
+
+void audio_server_handle_resume(Audio_Server *s, int event_sock, Message *req, Message *res);
+
 int main(int argc, char **argv) {
     Audio_Server s;
 
@@ -91,7 +103,6 @@ int main(int argc, char **argv) {
     int N = 0;
     const int MAX_EVENTS = 10;
     struct epoll_event events[MAX_EVENTS];
-    struct epoll_event ev;
 
     pthread_create(&s.streaming_thread, NULL, audio_server_streaming_thread, &s);
 
@@ -112,29 +123,7 @@ int main(int argc, char **argv) {
             int event_sock = events[i].data.fd;
 
             if (event_sock == s.sockfd) {
-                int conn_sock = accept(s.sockfd, NULL, NULL);
-
-                if (conn_sock == -1) {
-                    LOG_ERROR("accept(): %s", strerror(errno));
-                    continue;
-                }
-
-                ev.events = EPOLLIN;
-                ev.data.fd = conn_sock;
-
-                if (epoll_ctl(s.epollfd, EPOLL_CTL_ADD, conn_sock, &ev) == -1) {
-                    LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
-                    close(conn_sock);
-                    break;
-                }
-
-                Client_State state = {0};
-                state.sockfd = conn_sock;
-
-                pthread_mutex_lock(&s.mu);
-                hmput(s.clients, conn_sock, state);
-                pthread_mutex_unlock(&s.mu);
-                LOG_INFO("Client connected");
+                audio_server_handle_accept(&s);
                 continue;
             }
 
@@ -150,114 +139,26 @@ int main(int argc, char **argv) {
                 LOG_WARN("Client socket closed without sending REQ_EXIT packet");
             }
 
-            if (req.kind == REQ_EXIT) {
-                pthread_mutex_lock(&s.mu);
-                ptrdiff_t idx = hmgeti(s.clients, event_sock);
-                if (idx != -1) {
-                    Client_State *state = &s.clients[idx].value;
-                    if (state->fd > 0) {
-                        close(state->fd);
-                    }
-                    hmdel(s.clients, event_sock);
-                    res.kind = RES_EXIT;
-                    ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                    if (ok == -1) {
-                        LOG_ERROR("send() failed: %s", strerror(errno));
-                    }
-                    close(event_sock); // this call although removes event_sock from epoll
-                }
-                pthread_mutex_unlock(&s.mu);
-                LOG_INFO("Client disconnected");
-            }
-
-            if (req.kind == REQ_LIST) {
-                res.kind = RES_LIST_CONTINUE;
-                for (int i = 0; i < shlen(s.audios); i++) {
-                    strcpy(res.buf, s.audios[i].key);
-                    ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                    if (ok == -1) {
-                        LOG_ERROR("send() failed: %s", strerror(errno));
-                    }
-                }
-                res.kind = RES_LIST_END;
-                ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                if (ok == -1) {
-                    LOG_ERROR("send() failed: %s", strerror(errno));
-                }
-                continue;
-            }
-            if (req.kind == REQ_START) {
-                char *basename = req.buf;
-                ptrdiff_t idx = shgeti(s.audios, basename);
-
-                if (idx == -1) {
-                    res.kind = RES_START_NO_FILE;
-                    ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                    if (ok == -1) {
-                        LOG_ERROR("send() failed: %s", strerror(errno));
-                    }
-                    continue;
-                }
-
-                const char *path = s.audios[idx].value;
-                int fd = open(path, O_RDONLY);
-
-                if (fd == -1) {
-                    LOG_ERROR("Failed to open indexed file. Maybe has been deleted");
-                    res.kind = RES_START_NO_FILE;
-                    ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                    if (ok == -1) {
-                        LOG_ERROR("send() failed: %s", strerror(errno));
-                    }
-                }
-
-                pthread_mutex_lock(&s.mu);
-                Clients_State *state = hmgetp(s.clients, event_sock);
-                if (state != NULL) {
-                    state->value.offset = 0;
-                    if (state->value.fd > 0) {
-                        close(state->value.fd);
-                    }
-                    state->value.fd = fd;
-                    state->value.playing = 1;
-                }
-                pthread_mutex_unlock(&s.mu);
-
-                res.kind = RES_START_OK;
-                ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                if (ok == -1) {
-                    LOG_ERROR("send() failed: %s", strerror(errno));
-                }
-
-                continue;
-            }
-            if (req.kind == REQ_STOP) {
-                pthread_mutex_lock(&s.mu);
-                Clients_State *state = hmgetp(s.clients, event_sock);
-                if (state != NULL) {
-                    state->value.playing = 0;
-                }
-                pthread_mutex_unlock(&s.mu);
-                res.kind = RES_STOP;
-                ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                if (ok == -1) {
-                    LOG_ERROR("send() failed: %s", strerror(errno));
-                }
-                continue;
-            }
-            if (req.kind == REQ_RESUME) {
-                pthread_mutex_lock(&s.mu);
-                Clients_State *state = hmgetp(s.clients, event_sock);
-                if (state != NULL) {
-                    state->value.playing = 1;
-                }
-                pthread_mutex_unlock(&s.mu);
-                res.kind = RES_RESUME;
-                ssize_t ok = send(event_sock, &res, sizeof(res), 0);
-                if (ok == -1) {
-                    LOG_ERROR("send() failed: %s", strerror(errno));
-                }
-                continue;
+            switch (req.kind) {
+            case REQ_EXIT:
+                audio_server_handle_exit(&s, event_sock, &req, &res);
+                break;
+            case REQ_LIST:
+                audio_server_handle_list(&s, event_sock, &req, &res);
+                break;
+            case REQ_START:
+                audio_server_handle_start(&s, event_sock, &req, &res);
+                break;
+            case REQ_STOP:
+                audio_server_handle_stop(&s, event_sock, &req, &res);
+                break;
+            case REQ_RESUME:
+                audio_server_handle_resume(&s, event_sock, &req, &res);
+                break;
+            case _:
+            default:
+                LOG_ERROR("Invalid request");
+                break;
             }
         }
     }
@@ -414,7 +315,10 @@ void audio_server_destroy(Audio_Server *s) {
     if (s->epollfd > 0) {
         close(s->epollfd);
     }
-    shfree(s->audios); // free keys and values too
+    for (int i = 0; i < shlen(s->audios); i++) {
+        free((void *)s->audios[i].value);
+    }
+    shfree(s->audios); // free keys too
 }
 
 void audio_server_load_audios(Audio_Server *s) {
@@ -433,7 +337,7 @@ void audio_server_load_audios(Audio_Server *s) {
             char path[NAME_MAX];
             strcpy(path, AUDIODIR "/");
             strcat(path, de->d_name);
-            shput(s->audios, de->d_name, path);
+            shput(s->audios, de->d_name, strdup(path));
         }
     }
 
@@ -442,4 +346,140 @@ void audio_server_load_audios(Audio_Server *s) {
     }
 
     LOG_INFO("Loaded audios");
+}
+
+void audio_server_handle_accept(Audio_Server *s) {
+    struct epoll_event ev = {0};
+    int conn_sock = accept(s->sockfd, NULL, NULL);
+
+    if (conn_sock == -1) {
+        LOG_ERROR("accept(): %s", strerror(errno));
+        return;
+    }
+
+    ev.events = EPOLLIN;
+    ev.data.fd = conn_sock;
+
+    if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, conn_sock, &ev) == -1) {
+        LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+        close(conn_sock);
+        return;
+    }
+
+    Client_State state = {0};
+    state.sockfd = conn_sock;
+
+    pthread_mutex_lock(&s->mu);
+    hmput(s->clients, conn_sock, state);
+    pthread_mutex_unlock(&s->mu);
+    LOG_INFO("Client connected");
+}
+
+void audio_server_handle_exit(Audio_Server *s, int event_sock, Message *req, Message *res) {
+    pthread_mutex_lock(&s->mu);
+    ptrdiff_t idx = hmgeti(s->clients, event_sock);
+    if (idx != -1) {
+        Client_State *state = &s->clients[idx].value;
+        if (state->fd > 0) {
+            close(state->fd);
+        }
+        hmdel(s->clients, event_sock);
+        res->kind = RES_EXIT;
+        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        if (ok == -1) {
+            LOG_ERROR("send() failed: %s", strerror(errno));
+        }
+        close(event_sock); // this call although removes event_sock from epoll
+    }
+    pthread_mutex_unlock(&s->mu);
+    LOG_INFO("Client disconnected");
+}
+
+void audio_server_handle_list(Audio_Server *s, int event_sock, Message *req, Message *res) {
+    res->kind = RES_LIST_CONTINUE;
+    for (int i = 0; i < shlen(s->audios); i++) {
+        strcpy(res->buf, s->audios[i].key);
+        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        if (ok == -1) {
+            LOG_ERROR("send() failed: %s", strerror(errno));
+        }
+    }
+    res->kind = RES_LIST_END;
+    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    if (ok == -1) {
+        LOG_ERROR("send() failed: %s", strerror(errno));
+    }
+}
+
+void audio_server_handle_start(Audio_Server *s, int event_sock, Message *req, Message *res) {
+    char *basename = req->buf;
+    ptrdiff_t idx = shgeti(s->audios, basename);
+
+    if (idx == -1) {
+        res->kind = RES_START_NO_FILE;
+        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        if (ok == -1) {
+            LOG_ERROR("send() failed: %s", strerror(errno));
+        }
+        return;
+    }
+
+    const char *path = s->audios[idx].value;
+    int fd = open(path, O_RDONLY);
+
+    if (fd == -1) {
+        LOG_ERROR("Failed to open indexed file. Maybe has been deleted.");
+        LOG_ERROR("open() failed: %s", strerror(errno));
+        res->kind = RES_START_NO_FILE;
+        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        if (ok == -1) {
+            LOG_ERROR("send() failed: %s", strerror(errno));
+        }
+    }
+
+    pthread_mutex_lock(&s->mu);
+    Clients_State *state = hmgetp(s->clients, event_sock);
+    if (state != NULL) {
+        state->value.offset = 0;
+        if (state->value.fd > 0) {
+            close(state->value.fd);
+        }
+        state->value.fd = fd;
+        state->value.playing = 1;
+    }
+    pthread_mutex_unlock(&s->mu);
+
+    res->kind = RES_START_OK;
+    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    if (ok == -1) {
+        LOG_ERROR("send() failed: %s", strerror(errno));
+    }
+}
+
+void audio_server_handle_stop(Audio_Server *s, int event_sock, Message *req, Message *res) {
+    pthread_mutex_lock(&s->mu);
+    Clients_State *state = hmgetp(s->clients, event_sock);
+    if (state != NULL) {
+        state->value.playing = 0;
+    }
+    pthread_mutex_unlock(&s->mu);
+    res->kind = RES_STOP;
+    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    if (ok == -1) {
+        LOG_ERROR("send() failed: %s", strerror(errno));
+    }
+}
+
+void audio_server_handle_resume(Audio_Server *s, int event_sock, Message *req, Message *res) {
+    pthread_mutex_lock(&s->mu);
+    Clients_State *state = hmgetp(s->clients, event_sock);
+    if (state != NULL) {
+        state->value.playing = 1;
+    }
+    pthread_mutex_unlock(&s->mu);
+    res->kind = RES_RESUME;
+    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    if (ok == -1) {
+        LOG_ERROR("send() failed: %s", strerror(errno));
+    }
 }
