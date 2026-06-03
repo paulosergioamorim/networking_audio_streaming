@@ -60,7 +60,7 @@ void queue_enqueue(Queue *q, unsigned char *src, size_t len) {
         q->buf[idx] = src[i];
     }
 
-    pthread_cond_signal(&q->cond_empty);
+    pthread_cond_broadcast(&q->cond_empty);
     pthread_mutex_unlock(&q->mu);
 }
 
@@ -84,7 +84,7 @@ size_t queue_dequeue(Queue *q, unsigned char *dest, size_t len) {
         q->count--;
     }
 
-    pthread_cond_signal(&q->cond_full);
+    pthread_cond_broadcast(&q->cond_full);
     pthread_mutex_unlock(&q->mu);
 
     return to_read;
