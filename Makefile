@@ -16,10 +16,10 @@ objFolder:
 obj/%.o: src/%.c | objFolder
 	$(CC) $< -o $@ -c $(FLAGS) -MMD -MP
 
-server: obj/server.o obj/signals.o obj/suffix.o
+server: obj/server.o obj/signals.o obj/suffix.o obj/logger.o
 	$(CC) $^ -o $@ $(FLAGS) -lpthread
 
-client: obj/client.o obj/signals.o obj/queue.o
+client: obj/client.o obj/signals.o obj/queue.o obj/logger.o
 	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread
 
 clean:
