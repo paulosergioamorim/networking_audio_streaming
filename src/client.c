@@ -19,10 +19,9 @@
 
 typedef struct {
     int epollfd;
-    int sock;
+    int sockfd;
     libvlc_instance_t *vlc_instance;
     libvlc_media_player_t *vlc_mp;
-    libvlc_media_t *vlc_media;
     Queue queue;
     int is_playing;
 } Audio_Client;
@@ -144,16 +143,16 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                int wr = send(c.sock, &req, sizeof(req), MSG_NOSIGNAL);
+                int wr = send(c.sockfd, &req, sizeof(req), MSG_NOSIGNAL);
                 if (wr == -1) {
                     perror("send");
                     break;
                 }
             }
 
-            if (event_sock == c.sock) {
+            if (event_sock == c.sockfd) {
                 Message res = {0};
-                int br = recv(c.sock, &res, sizeof(res), MSG_WAITALL);
+                int br = recv(c.sockfd, &res, sizeof(res), MSG_WAITALL);
 
                 if (br == -1) {
                     perror("recv");
@@ -232,9 +231,9 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     sigaddset(&mask, SIGINT);
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
 
-    c->sock = audio_client_create_tcp_socket(server_addr, server_tcp_port);
+    c->sockfd = audio_client_create_tcp_socket(server_addr, server_tcp_port);
 
-    if (c->sock == -1) {
+    if (c->sockfd == -1) {
         return 0;
     }
 
@@ -246,8 +245,8 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
     epoll_ctl(c->epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev);
     ev.events = EPOLLIN;
-    ev.data.fd = c->sock;
-    epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sock, &ev);
+    ev.data.fd = c->sockfd;
+    epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sockfd, &ev);
 
     queue_init(&c->queue, MB(1));
 
@@ -259,9 +258,9 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
         return 0;
     }
 
-    c->vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
-    c->vlc_mp = libvlc_media_player_new_from_media(c->vlc_media);
-    libvlc_media_release(c->vlc_media);
+    libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
+    c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
+    libvlc_media_release(vlc_media);
 
     if (signals_sigint_sigaction() == -1) {
         return 0;
@@ -314,21 +313,25 @@ void audio_client_handle_exit(Audio_Client *c) {
     Message req = {0};
     Message res = {0};
     req.kind = REQ_EXIT;
-    ssize_t ok = send(c->sock, &req, sizeof(req), MSG_NOSIGNAL);
+    ssize_t ok = send(c->sockfd, &req, sizeof(req), MSG_NOSIGNAL);
 
     if (ok == -1) {
         perror("audio_client_handle_exit : send");
         return;
     }
 
-    ok = recv(c->sock, &res, sizeof(res), MSG_NOSIGNAL);
+    ok = recv(c->sockfd, &res, sizeof(res), MSG_NOSIGNAL);
 
     if (ok == -1 && errno == EPIPE) {
         perror("audio_client_handle_exit : recv");
         return;
     }
 
-    if (res.kind == REQ_EXIT && c->sock > 0) {
-        close(c->sock);
+    if (res.kind == REQ_EXIT && c->sockfd > 0) {
+        close(c->sockfd);
+    }
+
+    if (c->epollfd > 0) {
+        close(c->epollfd);
     }
 }
