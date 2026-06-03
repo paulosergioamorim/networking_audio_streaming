@@ -11,6 +11,7 @@ typedef enum {
     REQ_LIST,
     REQ_START,
     REQ_STOP,
+    REQ_EXIT,
     REQ_RESUME,
     RES_LIST_CONTINUE,
     RES_LIST_END,
@@ -18,7 +19,8 @@ typedef enum {
     RES_START_NO_FILE,
     RES_STOP,
     RES_RESUME,
-    RES_STREAM
+    RES_STREAM,
+    RES_EXIT
 } Message_Kind;
 
 typedef struct {

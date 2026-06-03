@@ -52,6 +52,8 @@ int audio_client_create_tcp_socket(const char *server_addr, int port);
 
 void audio_client_destroy(Audio_Client *c);
 
+void audio_client_handle_exit(Audio_Client *c);
+
 int main(int argc, char **argv) {
     Audio_Client c;
 
@@ -174,6 +176,25 @@ int main(int argc, char **argv) {
                 }
 
                 if (res.kind == RES_START_OK) {
+                    c.is_playing = 0;
+
+                    // free all libvlc threads
+                    pthread_mutex_lock(&c.queue.mu);
+                    c.queue.is_active = 0;
+                    pthread_cond_broadcast(&c.queue.cond_empty);
+                    pthread_mutex_unlock(&c.queue.mu);
+
+                    // stop the libvlc player
+                    libvlc_media_player_stop(c.vlc_mp);
+
+                    // reset the circular queue
+                    queue_clear(&c.queue);
+
+                    // activate the queue
+                    pthread_mutex_lock(&c.queue.mu);
+                    c.queue.is_active = 1;
+                    pthread_mutex_unlock(&c.queue.mu);
+
                     c.is_playing = 1;
                     libvlc_media_player_play(c.vlc_mp);
                     continue;
@@ -181,7 +202,7 @@ int main(int argc, char **argv) {
 
                 if (res.kind == RES_STOP) {
                     c.is_playing = 0;
-                    libvlc_media_player_stop(c.vlc_mp);
+                    libvlc_media_player_pause(c.vlc_mp);
                     continue;
                 }
 
@@ -284,10 +305,30 @@ void audio_client_destroy(Audio_Client *c) {
         libvlc_release(c->vlc_instance);
     }
 
-    if (c->sock > 0) {
-        close(c->sock);
-    }
-
+    audio_client_handle_exit(c);
     c->is_playing = 0;
     queue_destroy(&c->queue);
+}
+
+void audio_client_handle_exit(Audio_Client *c) {
+    Message req = {0};
+    Message res = {0};
+    req.kind = REQ_EXIT;
+    ssize_t ok = send(c->sock, &req, sizeof(req), MSG_NOSIGNAL);
+
+    if (ok == -1) {
+        perror("audio_client_handle_exit : send");
+        return;
+    }
+
+    ok = recv(c->sock, &res, sizeof(res), MSG_NOSIGNAL);
+
+    if (ok == -1 && errno == EPIPE) {
+        perror("audio_client_handle_exit : recv");
+        return;
+    }
+
+    if (res.kind == REQ_EXIT && c->sock > 0) {
+        close(c->sock);
+    }
 }

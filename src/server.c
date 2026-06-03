@@ -1,3 +1,4 @@
+#include "logger.h"
 #include "packets.h"
 #include "signals.h"
 #include "suffix.h"
@@ -18,6 +19,7 @@
 #include "stb_ds.h"
 
 #define AUDIODIR "./audios"
+#define BACKLOG 5
 
 typedef struct {
     size_t offset;
@@ -52,6 +54,9 @@ void audio_server_destroy(Audio_Server *s);
 int main(int argc, char **argv) {
     Audio_Server s;
 
+    logger_initConsoleLogger(stdout);
+    logger_setLevel(LogLevel_DEBUG);
+
     if (argc < 3) {
         fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
         return 1;
@@ -66,6 +71,7 @@ int main(int argc, char **argv) {
     }
 
     int ok = audio_server_init(&s, ip_addr, port);
+    LOG_INFO("Server listening on %s:%d", ip_addr, port);
 
     if (!ok) {
         audio_server_destroy(&s);
@@ -87,7 +93,7 @@ int main(int argc, char **argv) {
         }
 
         if (N == -1) {
-            perror("epoll_wait");
+            LOG_ERROR("epoll_wait(): %s", strerror(errno));
             audio_server_destroy(&s);
             return 1;
         }
@@ -99,12 +105,18 @@ int main(int argc, char **argv) {
                 int conn_sock = accept(s.tcp_sock, NULL, NULL);
 
                 if (conn_sock == -1) {
+                    LOG_ERROR("accept(): %s", strerror(errno));
                     continue;
                 }
 
                 ev.events = EPOLLIN;
                 ev.data.fd = conn_sock;
-                epoll_ctl(s.epoll_fd, EPOLL_CTL_ADD, conn_sock, &ev);
+
+                if (epoll_ctl(s.epoll_fd, EPOLL_CTL_ADD, conn_sock, &ev) == -1) {
+                    LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+                    close(conn_sock);
+                    break;
+                }
 
                 Connection_State state = {0};
                 state.sock = conn_sock;
@@ -112,28 +124,37 @@ int main(int argc, char **argv) {
                 pthread_mutex_lock(&s.conns_mutex);
                 hmput(s.conns, conn_sock, state);
                 pthread_mutex_unlock(&s.conns_mutex);
+                LOG_INFO("Client connected");
                 continue;
             }
 
             Message req = {0};
             Message res = {0};
-            ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_WAITALL);
+            ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_NOSIGNAL);
 
             if (bytes_readed == -1) {
-                perror("recv");
+                LOG_ERROR("recv() failed: %s", strerror(errno));
                 break;
             } else if (bytes_readed == 0) {
+                close(event_sock); // this call although removes event_sock from epoll
+                LOG_WARN("Client socket closed without sending REQ_EXIT packet");
+            }
+
+            if (req.kind == REQ_EXIT) {
                 pthread_mutex_lock(&s.conns_mutex);
-                Connections_State *state = hmgetp(s.conns, event_sock);
-                if (state != NULL) {
-                    if (state->value.fd > 0) {
-                        close(state->value.fd);
+                ptrdiff_t idx = hmgeti(s.conns, event_sock);
+                if (idx != -1) {
+                    Connection_State *state = &s.conns[idx].value;
+                    if (state->fd > 0) {
+                        close(state->fd);
                     }
+                    hmdel(s.conns, event_sock);
+                    res.kind = RES_EXIT;
+                    send(event_sock, &res, sizeof(res), 0);
+                    close(event_sock); // this call although removes event_sock from epoll
                 }
-                hmdel(s.conns, event_sock);
                 pthread_mutex_unlock(&s.conns_mutex);
-                epoll_ctl(s.epoll_fd, EPOLL_CTL_DEL, event_sock, &ev);
-                close(event_sock);
+                LOG_INFO("Client disconnected");
             }
 
             if (req.kind == REQ_LIST) {
@@ -216,6 +237,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    LOG_INFO("Shutdown server");
     audio_server_destroy(&s);
     return 0;
 }
@@ -252,11 +274,7 @@ void audio_server_transmit_packet(Connection_State *c) {
 void *audio_server_streaming_thread(void *audio_server) {
     Audio_Server *s = (Audio_Server *)audio_server;
 
-    while (1) {
-        if (!s->conns) {
-            return NULL;
-        }
-
+    while (!signaled) {
         int n_conns = hmlen(s->conns);
         for (int i = 0; i < n_conns; i++) {
             pthread_mutex_lock(&s->conns_mutex);
@@ -281,12 +299,12 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (fd == -1) {
-        perror("socket");
+        LOG_ERROR("socket() failed: %s", strerror(errno));
         return -1;
     }
 
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
-        perror("setsockopt");
+        LOG_ERROR("setsockopt() failed: %s", strerror(errno));
         return -1;
     }
 
@@ -299,15 +317,15 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
 
     if (ret_val != 0) {
-        fprintf(stderr, "bind failed [%s]\n", strerror(errno));
+        LOG_ERROR("bind() failed: %s", strerror(errno));
         return -1;
     }
 
     /* Step3: listen for incoming connections */
-    ret_val = listen(fd, 5);
+    ret_val = listen(fd, BACKLOG);
 
     if (ret_val != 0) {
-        fprintf(stderr, "listen failed [%s]\n", strerror(errno));
+        LOG_ERROR("listen() failed: %s", strerror(errno));
         return -1;
     }
 
@@ -333,7 +351,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     s->epoll_fd = epoll_create1(0);
 
     if (s->epoll_fd == -1) {
-        perror("epoll_create1");
+        LOG_ERROR("epoll_create1() failed: %s", strerror(errno));
         return 0;
     }
 
@@ -341,7 +359,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     ev.data.fd = s->tcp_sock;
 
     if (epoll_ctl(s->epoll_fd, EPOLL_CTL_ADD, s->tcp_sock, &ev) == -1) {
-        perror("epoll_ctl: listen_sock");
+        LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
         return 0;
     }
 
