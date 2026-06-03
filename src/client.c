@@ -176,6 +176,25 @@ int main(int argc, char **argv) {
                 }
 
                 if (res.kind == RES_START_OK) {
+                    c.is_playing = 0;
+
+                    // free all libvlc threads
+                    pthread_mutex_lock(&c.queue.mu);
+                    c.queue.is_active = 0;
+                    pthread_cond_broadcast(&c.queue.cond_empty);
+                    pthread_mutex_unlock(&c.queue.mu);
+
+                    // stop the libvlc player
+                    libvlc_media_player_stop(c.vlc_mp);
+
+                    // reset the circular queue
+                    queue_clear(&c.queue);
+
+                    // activate the queue
+                    pthread_mutex_lock(&c.queue.mu);
+                    c.queue.is_active = 1;
+                    pthread_mutex_unlock(&c.queue.mu);
+
                     c.is_playing = 1;
                     libvlc_media_player_play(c.vlc_mp);
                     continue;
@@ -183,7 +202,7 @@ int main(int argc, char **argv) {
 
                 if (res.kind == RES_STOP) {
                     c.is_playing = 0;
-                    libvlc_media_player_stop(c.vlc_mp);
+                    libvlc_media_player_pause(c.vlc_mp);
                     continue;
                 }
 
