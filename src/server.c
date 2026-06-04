@@ -209,7 +209,7 @@ void audio_server_transmit_packet(Client_State *c) {
         c->playing = 0;
         return;
     }
-    c->offset += ok; // MSG_DONTWAIT garantees that ok = res.len
+    c->offset += ok;
 }
 
 void *audio_server_streaming_thread(void *audio_server) {
