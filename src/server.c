@@ -163,7 +163,7 @@ int main(int argc, char **argv) {
             case KIND_RESUME:
                 audio_server_handle_resume(&s, event_sock, &req, &res);
                 break;
-            case KIND_NONE:
+            case _:
             default:
                 LOG_ERROR("Invalid request");
                 break;
@@ -179,9 +179,13 @@ int main(int argc, char **argv) {
 void audio_server_transmit_packet(Client_State *c) {
     Response res = {0};
     res.header.kind = KIND_STREAM;
-    gettimeofday(&res.header.tv, NULL);
 
-    ssize_t bytes_read = pread(c->fd, res.buf, sizeof(res.buf), c->offset);
+    if (lseek(c->fd, c->offset, SEEK_SET) < 0) {
+        return;
+    }
+
+    gettimeofday(&res.header.tv, NULL);
+    ssize_t bytes_read = read(c->fd, res.buf, sizeof(res.buf));
 
     if (bytes_read <= 0) {
         c->playing = 0;
@@ -190,34 +194,30 @@ void audio_server_transmit_packet(Client_State *c) {
     }
 
     res.header.len = bytes_read;
-
-    struct iovec iov[2];
-    iov[0].iov_base = &res.header;
-    iov[0].iov_len = sizeof(res.header);
-    iov[1].iov_base = res.buf;
-    iov[1].iov_len = res.header.len;
-
-    struct msghdr msg = {0};
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
-
-    ssize_t ok = sendmsg(c->sockfd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    ssize_t ok = send(c->sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
 
     if (ok == -1) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            LOG_ERROR("sendmsg() failed: %s", strerror(errno));
+        LOG_ERROR("send() failed: %s", strerror(errno));
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            LOG_ERROR("Would block");
         }
         return;
     }
 
+    ok = send(c->sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+
+    if (ok == -1) {
+        LOG_ERROR("send() failed: %s", strerror(errno));
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            LOG_ERROR("Would block");
+        }
+        return;
+    }
     if (ok == 0) {
         c->playing = 0;
         return;
     }
-
-    if (ok >= sizeof(res.header)) {
-        c->offset += (ok - sizeof(res.header));
-    }
+    c->offset += ok;
 }
 
 void *audio_server_streaming_thread(void *audio_server) {
