@@ -36,15 +36,20 @@ typedef struct {
 } Clients_State;
 
 typedef struct {
-    char *key;         // basename
-    const char *value; // path
+    const char *path; // relative path from pwd
+    int len;          // strlen(key) + 1
 } Audio;
+
+typedef struct {
+    char *key; // basename
+    Audio value;
+} Audios;
 
 typedef struct {
     int sockfd;
     int epollfd;
     Clients_State *clients;
-    Audio *audios;
+    Audios *audios;
     pthread_mutex_t mu;
     pthread_t streaming_thread;
 } Audio_Server;
@@ -329,7 +334,7 @@ void audio_server_destroy(Audio_Server *s) {
         close(s->epollfd);
     }
     for (int i = 0; i < shlen(s->audios); i++) {
-        free((void *)s->audios[i].value);
+        free((void *)s->audios[i].value.path);
     }
     shfree(s->audios); // free keys too
 }
@@ -348,9 +353,11 @@ void audio_server_load_audios(Audio_Server *s) {
     while ((de = readdir(dir)) != NULL) {
         if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
             char path[NAME_MAX];
+            char *name = de->d_name;
             strcpy(path, AUDIODIR "/");
-            strcat(path, de->d_name);
-            shput(s->audios, de->d_name, strdup(path));
+            strcat(path, name);
+            Audio audio = {.path = strdup(path), .len = strlen(name) + 1};
+            shput(s->audios, name, audio);
         }
     }
 
@@ -414,7 +421,7 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
     res->header.kind = KIND_LIST;
     res->header.code = STATUS_LIST_CONTINUE;
     for (int i = 0; i < shlen(s->audios); i++) {
-        res->header.len = strlen(s->audios[i].key);
+        res->header.len = s->audios[i].value.len;
         strcpy(res->buf, s->audios[i].key);
         ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
         if (ok == -1) {
@@ -451,7 +458,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         return;
     }
 
-    const char *path = s->audios[idx].value;
+    const char *path = s->audios[idx].value.path;
     int fd = open(path, O_RDONLY);
 
     if (fd == -1) {
