@@ -1,33 +1,44 @@
 #ifndef PACKETS_H
 #define PACKETS_H
 
+#include <linux/limits.h>
 #include <stddef.h>
 #include <sys/time.h>
 
-#define MESSAGE_SIZE 4096
-
 typedef enum {
     _,
-    REQ_LIST,
-    REQ_START,
-    REQ_STOP,
-    REQ_EXIT,
-    REQ_RESUME,
-    RES_LIST_CONTINUE,
-    RES_LIST_END,
-    RES_START_OK,
-    RES_START_NO_FILE,
-    RES_STOP,
-    RES_RESUME,
-    RES_STREAM,
-    RES_EXIT
+    KIND_LIST,
+    KIND_START,
+    KIND_STOP,
+    KIND_EXIT,
+    KIND_RESUME,
+    KIND_STREAM,
 } Message_Kind;
+
+typedef enum { STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
 
 typedef struct {
     Message_Kind kind;
+    size_t len; // the lenght of 'buf'
+} Request_Header;
+
+typedef struct {
+    Request_Header header;
+    char buf[NAME_MAX]; // only KIND_STOP messages use this
+} Request;
+
+typedef struct {
+    Message_Kind kind;
+    Status_Code code;
     struct timeval tv;
-    size_t len;
-    char buf[MESSAGE_SIZE];
-} Message;
+    size_t len; // the lenght of 'buf'
+} Response_Header;
+
+#define RESPONSE_MAX 4096
+
+typedef struct {
+    Response_Header header;
+    char buf[RESPONSE_MAX]; // only KIND_LIST and KIND_STREAM use this
+} Response;
 
 #endif

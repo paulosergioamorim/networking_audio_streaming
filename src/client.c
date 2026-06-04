@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <linux/limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -116,8 +117,8 @@ int main(int argc, char **argv) {
             int event_sock = events[i].data.fd;
 
             if (event_sock == STDIN_FILENO) {
-                Message req = {0};
-                char prompt[256] = {0};
+                Request req = {0};
+                char prompt[NAME_MAX] = {0};
                 read(STDIN_FILENO, prompt, sizeof(prompt));
                 char *ptr = strchr(prompt, '\n');
 
@@ -136,13 +137,14 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                req.kind = audio_client_parse_str_to_enum(prompt);
+                req.header.kind = audio_client_parse_str_to_enum(prompt);
                 char *filename;
 
-                switch (req.kind) {
-                case REQ_START:
+                switch (req.header.kind) {
+                case KIND_START:
                     filename = prompt + sizeof("/start ") - 1;
                     strcpy(req.buf, filename);
+                    req.header.len = strlen(filename) + 1;
                     break;
                 case _:
                     printf("Invalid input\n");
@@ -151,45 +153,72 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                int wr = send(c.sockfd, &req, sizeof(req), MSG_NOSIGNAL);
-                if (wr == -1) {
+                ssize_t ok = send(c.sockfd, &req.header, sizeof(req.header),
+                                  MSG_NOSIGNAL | (req.header.kind == KIND_START ? MSG_MORE : 0));
+                if (ok == -1) {
+                    perror("send");
+                    break;
+                }
+
+                if (req.header.kind != KIND_START) {
+                    break;
+                }
+
+                ok = send(c.sockfd, req.buf, req.header.len, MSG_NOSIGNAL);
+                if (ok == -1) {
                     perror("send");
                     break;
                 }
             }
 
             if (event_sock == c.sockfd) {
-                Message res = {0};
-                ssize_t ok = recv(c.sockfd, &res, sizeof(res), MSG_WAITALL);
+                Response res = {0};
+                ssize_t ok = recv(c.sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
 
                 if (ok == -1) {
                     perror("recv");
                     break;
                 }
 
-                switch (res.kind) {
-                case RES_LIST_END:
-                    printf("End of list\n");
-                    break;
-                case RES_LIST_CONTINUE:
+                switch (res.header.kind) {
+                case KIND_LIST:
+                    if (res.header.code == STATUS_LIST_END) {
+                        printf("End of list\n");
+                        break;
+                    }
+                    ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+
+                    if (ok == -1) {
+                        perror("recv");
+                        break;
+                    }
                     printf("| %s |\n", res.buf);
                     break;
-                case RES_START_NO_FILE:
-                    printf("No audio file\n");
-                    break;
-                case RES_START_OK:
+                case KIND_START:
+                    if (res.header.code == STATUS_ERR_NO_FILE) {
+                        printf("No audio file\n");
+                        break;
+                    }
                     audio_client_handle_start(&c);
                     break;
-                case RES_STOP:
+                case KIND_STOP:
                     c.is_playing = 0;
                     libvlc_media_player_pause(c.vlc_mp);
                     break;
-                case RES_RESUME:
+                case KIND_RESUME:
                     c.is_playing = 1;
                     libvlc_media_player_play(c.vlc_mp);
                     break;
-                case RES_STREAM:
-                    queue_enqueue(&c.queue, (unsigned char *)res.buf, res.len);
+                case KIND_STREAM:
+                    // MSG_WAITALL: block until the full amount of data can be returned
+                    ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_WAITALL);
+
+                    if (ok == -1) {
+                        perror("recv");
+                        break;
+                    }
+
+                    queue_enqueue(&c.queue, (unsigned char *)res.buf, res.header.len);
                     break;
                 case _:
                 default:
@@ -290,23 +319,23 @@ void audio_client_destroy(Audio_Client *c) {
 }
 
 void audio_client_handle_exit(Audio_Client *c) {
-    Message req = {0};
-    Message res = {0};
-    req.kind = REQ_EXIT;
-    ssize_t ok = send(c->sockfd, &req, sizeof(req), MSG_NOSIGNAL);
+    Request req = {0};
+    Response res = {0};
+    req.header.kind = KIND_EXIT;
+    ssize_t ok = send(c->sockfd, &req.header, sizeof(req.header), MSG_NOSIGNAL);
 
     if (ok == -1) {
-        perror("audio_client_handle_exit : send");
+        LOG_ERROR("send() failed: %s", strerror(errno));
         return;
     }
 
-    ok = recv(c->sockfd, &res, sizeof(res), MSG_NOSIGNAL);
+    ok = recv(c->sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
 
     if (ok == -1 && errno == EPIPE) {
-        perror("audio_client_handle_exit : recv");
+        LOG_ERROR("recv() failed: %s", strerror(errno));
         return;
     }
-    if (res.kind == REQ_EXIT && c->sockfd > 0) {
+    if (res.header.kind == KIND_EXIT && c->sockfd > 0) {
         close(c->sockfd);
     }
     if (c->epollfd > 0) {
@@ -316,19 +345,19 @@ void audio_client_handle_exit(Audio_Client *c) {
 
 Message_Kind audio_client_parse_str_to_enum(const char *str) {
     if (strcmp(str, "/exit") == 0) {
-        return REQ_EXIT;
+        return KIND_EXIT;
     }
     if (strcmp(str, "/list") == 0) {
-        return REQ_LIST;
+        return KIND_LIST;
     }
     if (strncmp(str, "/start", 6) == 0) {
-        return REQ_START;
+        return KIND_START;
     }
     if (strcmp(str, "/stop") == 0) {
-        return REQ_STOP;
+        return KIND_STOP;
     }
     if (strcmp(str, "/resume") == 0) {
-        return RES_RESUME;
+        return KIND_RESUME;
     }
     return _;
 }

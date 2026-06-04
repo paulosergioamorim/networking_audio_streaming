@@ -63,15 +63,15 @@ void audio_server_destroy(Audio_Server *s);
 
 void audio_server_handle_accept(Audio_Server *s);
 
-void audio_server_handle_exit(Audio_Server *s, int event_sock, Message *req, Message *res);
+void audio_server_handle_exit(Audio_Server *s, int event_sock, Request *req, Response *res);
 
-void audio_server_handle_list(Audio_Server *s, int event_sock, Message *req, Message *res);
+void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Response *res);
 
-void audio_server_handle_start(Audio_Server *s, int event_sock, Message *req, Message *res);
+void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Response *res);
 
-void audio_server_handle_stop(Audio_Server *s, int event_sock, Message *req, Message *res);
+void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Response *res);
 
-void audio_server_handle_resume(Audio_Server *s, int event_sock, Message *req, Message *res);
+void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res);
 
 int main(int argc, char **argv) {
     Audio_Server s;
@@ -127,9 +127,9 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            Message req = {0};
-            Message res = {0};
-            ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_NOSIGNAL);
+            Request req = {0};
+            Response res = {0};
+            ssize_t bytes_readed = recv(event_sock, &req.header, sizeof(req.header), MSG_NOSIGNAL);
 
             if (bytes_readed == -1) {
                 LOG_ERROR("recv() failed: %s", strerror(errno));
@@ -139,20 +139,20 @@ int main(int argc, char **argv) {
                 LOG_WARN("Client socket closed without sending REQ_EXIT packet");
             }
 
-            switch (req.kind) {
-            case REQ_EXIT:
+            switch (req.header.kind) {
+            case KIND_EXIT:
                 audio_server_handle_exit(&s, event_sock, &req, &res);
                 break;
-            case REQ_LIST:
+            case KIND_LIST:
                 audio_server_handle_list(&s, event_sock, &req, &res);
                 break;
-            case REQ_START:
+            case KIND_START:
                 audio_server_handle_start(&s, event_sock, &req, &res);
                 break;
-            case REQ_STOP:
+            case KIND_STOP:
                 audio_server_handle_stop(&s, event_sock, &req, &res);
                 break;
-            case REQ_RESUME:
+            case KIND_RESUME:
                 audio_server_handle_resume(&s, event_sock, &req, &res);
                 break;
             case _:
@@ -169,15 +169,15 @@ int main(int argc, char **argv) {
 }
 
 void audio_server_transmit_packet(Client_State *c) {
-    Message res = {0};
-    res.kind = RES_STREAM;
+    Response res = {0};
+    res.header.kind = KIND_STREAM;
 
     if (lseek(c->fd, c->offset, SEEK_SET) < 0) {
         return;
     }
 
-    gettimeofday(&res.tv, NULL);
-    ssize_t bytes_read = read(c->fd, &res.buf, sizeof(res.buf));
+    gettimeofday(&res.header.tv, NULL);
+    ssize_t bytes_read = read(c->fd, res.buf, sizeof(res.buf));
 
     if (bytes_read <= 0) {
         c->playing = 0;
@@ -185,18 +185,31 @@ void audio_server_transmit_packet(Client_State *c) {
         return;
     }
 
-    res.len = bytes_read;
-    ssize_t ok = send(c->sockfd, &res, sizeof(res), MSG_NOSIGNAL | MSG_DONTWAIT);
+    res.header.len = bytes_read;
+    ssize_t ok = send(c->sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
 
     if (ok == -1) {
         LOG_ERROR("send() failed: %s", strerror(errno));
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            LOG_ERROR("Would block");
+        }
+        return;
+    }
+
+    ok = send(c->sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+
+    if (ok == -1) {
+        LOG_ERROR("send() failed: %s", strerror(errno));
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            LOG_ERROR("Would block");
+        }
         return;
     }
     if (ok == 0) {
         c->playing = 0;
         return;
     }
-    c->offset += bytes_read; // MSG_DONTWAIT garantees that ok = res.len
+    c->offset += ok; // MSG_DONTWAIT garantees that ok = res.len
 }
 
 void *audio_server_streaming_thread(void *audio_server) {
@@ -375,7 +388,7 @@ void audio_server_handle_accept(Audio_Server *s) {
     LOG_INFO("Client connected");
 }
 
-void audio_server_handle_exit(Audio_Server *s, int event_sock, Message *req, Message *res) {
+void audio_server_handle_exit(Audio_Server *s, int event_sock, Request *req, Response *res) {
     pthread_mutex_lock(&s->mu);
     ptrdiff_t idx = hmgeti(s->clients, event_sock);
     if (idx != -1) {
@@ -384,8 +397,9 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock, Message *req, Mes
             close(state->fd);
         }
         hmdel(s->clients, event_sock);
-        res->kind = RES_EXIT;
-        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        res->header.kind = KIND_EXIT;
+        res->header.code = STATUS_OK;
+        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), 0);
         if (ok == -1) {
             LOG_ERROR("send() failed: %s", strerror(errno));
         }
@@ -395,29 +409,42 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock, Message *req, Mes
     LOG_INFO("Client disconnected");
 }
 
-void audio_server_handle_list(Audio_Server *s, int event_sock, Message *req, Message *res) {
-    res->kind = RES_LIST_CONTINUE;
+void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    LOG_INFO("Client request /list");
+    res->header.kind = KIND_LIST;
+    res->header.code = STATUS_LIST_CONTINUE;
     for (int i = 0; i < shlen(s->audios); i++) {
+        res->header.len = strlen(s->audios[i].key);
         strcpy(res->buf, s->audios[i].key);
-        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
+        if (ok == -1) {
+            LOG_ERROR("send() failed: %s", strerror(errno));
+        }
+        ok = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
         if (ok == -1) {
             LOG_ERROR("send() failed: %s", strerror(errno));
         }
     }
-    res->kind = RES_LIST_END;
-    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    res->header.code = STATUS_LIST_END;
+    ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
         LOG_ERROR("send() failed: %s", strerror(errno));
     }
 }
 
-void audio_server_handle_start(Audio_Server *s, int event_sock, Message *req, Message *res) {
+void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    LOG_INFO("Client request /start");
+    ssize_t ok = recv(event_sock, req->buf, req->header.len, MSG_NOSIGNAL);
+    if (ok == -1) {
+        LOG_ERROR("recv() failed: %s", strerror(errno));
+    }
     char *basename = req->buf;
     ptrdiff_t idx = shgeti(s->audios, basename);
+    res->header.kind = KIND_START;
 
     if (idx == -1) {
-        res->kind = RES_START_NO_FILE;
-        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        res->header.code = STATUS_ERR_NO_FILE;
+        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (ok == -1) {
             LOG_ERROR("send() failed: %s", strerror(errno));
         }
@@ -430,8 +457,8 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Message *req, Me
     if (fd == -1) {
         LOG_ERROR("Failed to open indexed file. Maybe has been deleted.");
         LOG_ERROR("open() failed: %s", strerror(errno));
-        res->kind = RES_START_NO_FILE;
-        ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+        res->header.code = STATUS_ERR_NO_FILE;
+        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (ok == -1) {
             LOG_ERROR("send() failed: %s", strerror(errno));
         }
@@ -449,36 +476,40 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Message *req, Me
     }
     pthread_mutex_unlock(&s->mu);
 
-    res->kind = RES_START_OK;
-    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    res->header.code = STATUS_OK;
+    ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
         LOG_ERROR("send() failed: %s", strerror(errno));
     }
 }
 
-void audio_server_handle_stop(Audio_Server *s, int event_sock, Message *req, Message *res) {
+void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    LOG_INFO("Client request /stop");
     pthread_mutex_lock(&s->mu);
     Clients_State *state = hmgetp(s->clients, event_sock);
     if (state != NULL) {
         state->value.playing = 0;
     }
     pthread_mutex_unlock(&s->mu);
-    res->kind = RES_STOP;
-    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    res->header.kind = KIND_STOP;
+    res->header.code = STATUS_OK;
+    ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
         LOG_ERROR("send() failed: %s", strerror(errno));
     }
 }
 
-void audio_server_handle_resume(Audio_Server *s, int event_sock, Message *req, Message *res) {
+void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    LOG_INFO("Client request /resume");
     pthread_mutex_lock(&s->mu);
     Clients_State *state = hmgetp(s->clients, event_sock);
     if (state != NULL) {
         state->value.playing = 1;
     }
     pthread_mutex_unlock(&s->mu);
-    res->kind = RES_RESUME;
-    ssize_t ok = send(event_sock, res, sizeof(*res), 0);
+    res->header.kind = KIND_RESUME;
+    res->header.code = STATUS_OK;
+    ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
         LOG_ERROR("send() failed: %s", strerror(errno));
     }
