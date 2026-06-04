@@ -210,12 +210,14 @@ int main(int argc, char **argv) {
                     libvlc_media_player_play(c.vlc_mp);
                     break;
                 case KIND_STREAM:
-                    ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+                    // MSG_WAITALL: block until the full amount of data can be returned
+                    ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_WAITALL);
 
                     if (ok == -1) {
                         perror("recv");
                         break;
                     }
+
                     queue_enqueue(&c.queue, (unsigned char *)res.buf, res.header.len);
                     break;
                 case _:

@@ -177,7 +177,7 @@ void audio_server_transmit_packet(Client_State *c) {
     }
 
     gettimeofday(&res.header.tv, NULL);
-    ssize_t bytes_read = read(c->fd, &res.buf, sizeof(res.buf));
+    ssize_t bytes_read = read(c->fd, res.buf, sizeof(res.buf));
 
     if (bytes_read <= 0) {
         c->playing = 0;
