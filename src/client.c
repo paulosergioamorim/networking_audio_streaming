@@ -34,6 +34,7 @@ typedef struct {
     libvlc_instance_t *vlc_instance;
     libvlc_media_player_t *vlc_mp;
     Queue queue;
+    int has_playered;
     int is_playing;
 } Audio_Client;
 
@@ -146,10 +147,15 @@ int main(int argc, char **argv) {
                     strcpy(req.buf, filename);
                     req.header.len = strlen(filename) + 1;
                     break;
-                case _:
+                case KIND_NONE:
                     printf("Invalid input\n");
                     break;
                 default:
+                    break;
+                }
+
+                if ((req.header.kind == KIND_STOP && c.is_playing == 0) ||
+                    (req.header.kind == KIND_RESUME && (c.has_playered == 0 || c.is_playing == 1))) {
                     break;
                 }
 
@@ -185,22 +191,24 @@ int main(int argc, char **argv) {
                     if (res.header.code == STATUS_LIST_END) {
                         printf("End of list\n");
                         break;
-                    }
-                    ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+                    } else if (res.header.code == STATUS_LIST_CONTINUE) {
+                        ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
 
-                    if (ok == -1) {
-                        perror("recv");
-                        break;
+                        if (ok == -1) {
+                            perror("recv");
+                            break;
+                        }
+                        printf("-> %s\n", res.buf);
                     }
-                    printf("| %s |\n", res.buf);
                     break;
                 case KIND_START:
                     if (res.header.code == STATUS_ERR_NO_FILE) {
                         printf("No audio file\n");
                         break;
+                    } else if (res.header.code == STATUS_OK) {
+                        audio_client_handle_start(&c);
+                        break;
                     }
-                    audio_client_handle_start(&c);
-                    break;
                 case KIND_STOP:
                     c.is_playing = 0;
                     libvlc_media_player_pause(c.vlc_mp);
@@ -220,9 +228,8 @@ int main(int argc, char **argv) {
 
                     queue_enqueue(&c.queue, (unsigned char *)res.buf, res.header.len);
                     break;
-                case _:
+                case KIND_NONE:
                 default:
-                    LOG_ERROR("Invalid response");
                     break;
                 }
             }
@@ -363,11 +370,12 @@ Message_Kind audio_client_parse_str_to_enum(const char *str) {
     if (strcmp(str, "/resume") == 0) {
         return KIND_RESUME;
     }
-    return _;
+    return KIND_NONE;
 }
 
 void audio_client_handle_start(Audio_Client *c) {
     c->is_playing = 0;
+    c->has_playered = 1;
 
     // free all libvlc threads
     pthread_mutex_lock(&c->queue.mu);

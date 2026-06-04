@@ -6,7 +6,7 @@
 #include <sys/time.h>
 
 typedef enum {
-    _,
+    KIND_NONE,
     KIND_LIST,
     KIND_START,
     KIND_STOP,
@@ -15,7 +15,7 @@ typedef enum {
     KIND_STREAM,
 } Message_Kind;
 
-typedef enum { STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
+typedef enum { STATUS_NONE, STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
 
 typedef struct {
     Message_Kind kind;
@@ -34,7 +34,7 @@ typedef struct {
     size_t len; // the lenght of 'buf'
 } Response_Header;
 
-#define RESPONSE_MAX 4096
+#define RESPONSE_MAX (1 << 16) // 64KB
 
 typedef struct {
     Response_Header header;
