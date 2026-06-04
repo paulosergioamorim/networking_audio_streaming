@@ -24,7 +24,7 @@ typedef struct {
 
 typedef struct {
     Request_Header header;
-    char buf[NAME_MAX]; // only KIND_STOP messages use this
+    char buf[NAME_MAX]; // only KIND_START messages use this
 } Request;
 
 typedef struct {
