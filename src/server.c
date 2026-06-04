@@ -141,6 +141,9 @@ int main(int argc, char **argv) {
                 break;
             } else if (bytes_readed == 0) {
                 close(event_sock); // this call although removes event_sock from epoll
+                pthread_mutex_lock(&s.mu);
+                hmdel(s.clients, event_sock);
+                pthread_mutex_unlock(&s.mu);
                 LOG_WARN("Client socket closed without sending REQ_EXIT packet");
             }
 
