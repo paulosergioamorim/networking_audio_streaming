@@ -319,6 +319,10 @@ void audio_client_destroy(Audio_Client *c) {
 }
 
 void audio_client_handle_exit(Audio_Client *c) {
+    if (c->sockfd <= 0) {
+        return;
+    }
+
     Request req = {0};
     Response res = {0};
     req.header.kind = KIND_EXIT;
