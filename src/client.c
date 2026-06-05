@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vlc/vlc.h>
+#include <limits.h> 
 
 #define MB(x) ((1 << 20) * x) // 1MB
 #define HELP_MSG                                                                                                       \
@@ -23,10 +24,20 @@
      "| /help         -> more info            |\n"                                                                     \
      "| /list         -> list avaliable songs |\n"                                                                     \
      "| /start <file> -> start streaming file |\n"                                                                     \
+     "| /stats        -> show metrics         |\n"                                                                     \
      "| /stop         -> stop streaming       |\n"                                                                     \
+     "| /reset        -> reset metrics        |\n"                                                                     \
      "| /resume       -> resume streaming     |\n"                                                                     \
      "| /exit or ^C   -> to exit              |\n"                                                                     \
      "|=======================================|\n")
+
+// Registrar só pacotes de streaming?
+typedef struct {
+    unsigned long min_us; 
+    unsigned long max_us; 
+    unsigned long sum_us; 
+    unsigned long count; 
+} Delay_Stats;
 
 typedef struct {
     int epollfd;
@@ -35,6 +46,7 @@ typedef struct {
     libvlc_media_player_t *vlc_mp;
     Queue queue;
     int is_playing;
+    Delay_Stats stats;   
 } Audio_Client;
 
 int open_cb(void *opaque, void **datap, uint64_t *sizep) {
@@ -55,6 +67,12 @@ int seek_cb(void *opaque, uint64_t offset) {
 
 void close_cb(void *opaque) {
 }
+
+void audio_client_stats_reset(Delay_Stats *s);
+ 
+void audio_client_stats_update(Delay_Stats *s, unsigned long delay_us);
+ 
+void audio_client_stats_print(const Delay_Stats *s);
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port);
 
@@ -134,6 +152,15 @@ int main(int argc, char **argv) {
                 }
                 if (strcmp(prompt, "/help") == 0) {
                     printf(HELP_MSG);
+                    continue;
+                }
+                if (strcmp(prompt, "/stats") == 0) {
+                    audio_client_stats_print(&c.stats);
+                    continue;
+                }
+                if (strcmp(prompt, "/reset") == 0) {
+                    audio_client_stats_reset(&c.stats);
+                    printf("Metrics reset.\n");
                     continue;
                 }
 
@@ -218,6 +245,12 @@ int main(int argc, char **argv) {
                         break;
                     }
 
+                    
+                    struct timeval now;
+                    gettimeofday(&now, NULL);
+                    unsigned long latency = (1000000 * now.tv_sec  + now.tv_usec) - (1000000 * res.header.tv.tv_sec + res.header.tv.tv_usec);
+                    audio_client_stats_update(&c.stats, latency);
+
                     queue_enqueue(&c.queue, (unsigned char *)res.buf, res.header.len);
                     break;
                 case _:
@@ -235,7 +268,9 @@ int main(int argc, char **argv) {
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port) {
     *c = (Audio_Client){0};
-
+    
+    audio_client_stats_reset(&c->stats);
+    
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
@@ -369,6 +404,7 @@ Message_Kind audio_client_parse_str_to_enum(const char *str) {
 void audio_client_handle_start(Audio_Client *c) {
     c->is_playing = 0;
 
+
     // free all libvlc threads
     pthread_mutex_lock(&c->queue.mu);
     c->queue.is_active = 0;
@@ -388,4 +424,40 @@ void audio_client_handle_start(Audio_Client *c) {
 
     c->is_playing = 1;
     libvlc_media_player_play(c->vlc_mp);
+}
+
+//Metrics
+void audio_client_stats_reset(Delay_Stats *s) {
+    s->min_us = ULONG_MAX;
+    s->max_us = 0;
+    s->sum_us = 0;
+    s->count  = 0;
+}
+
+void audio_client_stats_update(Delay_Stats *s, unsigned long delay_us) {
+    if (delay_us < s->min_us) 
+        s->min_us = delay_us;
+    if (delay_us > s->max_us) 
+        s->max_us = delay_us;
+    s->sum_us += delay_us;
+    s->count++;
+}
+
+void audio_client_stats_print(const Delay_Stats *s) {
+    if (s->count == 0) {
+        printf("|=======================================|\n"
+               "|          No packets received          |\n"
+               "|=======================================|\n");
+        return;
+    }
+    printf("|=======================================|\n"
+            " packets : %lu                          \n"
+            " min     : %lu us                       \n"
+            " max     : %lu us                       \n"
+            " avg     : %lu us                       \n"
+            "|=======================================|\n",
+            s->count,
+            s->min_us,
+            s->max_us,
+            s->sum_us / s->count);
 }
