@@ -46,6 +46,7 @@ typedef struct {
     libvlc_media_player_t *vlc_mp;
     Queue queue;
     int is_playing;
+    int has_playered;
     Delay_Stats stats;   
 } Audio_Client;
 
@@ -177,6 +178,11 @@ int main(int argc, char **argv) {
                     printf("Invalid input\n");
                     break;
                 default:
+                    break;
+                }
+                
+                if ((req.header.kind == KIND_STOP && c.is_playing == 0) ||
+                    (req.header.kind == KIND_RESUME && (c.has_playered == 0 || c.is_playing == 1))) {
                     break;
                 }
 
@@ -403,6 +409,7 @@ Message_Kind audio_client_parse_str_to_enum(const char *str) {
 
 void audio_client_handle_start(Audio_Client *c) {
     c->is_playing = 0;
+    c->has_playered = 1;
 
 
     // free all libvlc threads
