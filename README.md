@@ -85,7 +85,7 @@ enxuto, graças ao header da requisição e resposta. Somente mensagens que real
 
 - Amostra obtida numa VPN com tráfego zero.
 - `pcap/command_list.pcapng`: cliente se conecta, executa o `/list` e `/exit`.
-- `pcap/command_start.pcapng`: cliente se conecta, executa o `/start`, `/stop`, `/resume`.
+- `pcap/command_start.pcapng`: cliente se conecta, executa o `/start`, `/stop`, `/resume` e `/exit`.
 
 ### 7. Possíveis Melhorias
 
