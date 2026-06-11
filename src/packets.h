@@ -6,16 +6,15 @@
 #include <sys/time.h>
 
 typedef enum {
-    _,
+    KIND_NONE,
     KIND_LIST,
     KIND_START,
     KIND_STOP,
-    KIND_EXIT,
     KIND_RESUME,
     KIND_STREAM,
 } Message_Kind;
 
-typedef enum { STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
+typedef enum { STATUS_NONE, STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
 
 typedef struct {
     Message_Kind kind;
