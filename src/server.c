@@ -4,8 +4,8 @@
 #include "suffix.h"
 #include <arpa/inet.h>
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -13,6 +13,9 @@
 
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
+
+#define FLAG_IMPLEMENTATION
+#include "flag.h"
 
 #define AUDIODIR "./audios"
 #define BACKLOG 5
@@ -70,29 +73,37 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res);
 
+void audio_server_display_usage(FILE *fp) {
+    fprintf(fp, "USAGE: ./server [OPTIONS]\n");
+    fprintf(fp, "OPTIONS:\n");
+    flag_print_options(fp);
+}
+
 int main(int argc, char **argv) {
     Audio_Server s;
 
     logger_initConsoleLogger(stdout);
     logger_setLevel(LogLevel_DEBUG);
 
-    if (argc < 3) {
-        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
+    bool *help = flag_bool("help", false, "Print this help");
+    char **ipaddr = flag_str("ipaddr", "", "Provide the serving IP Address");
+    uint64_t *port = flag_uint64("port", 8000, "Provide the serving PORT");
+
+    if (!flag_parse(argc, argv) || !**ipaddr) {
+        audio_server_display_usage(stderr);
         return 1;
     }
 
-    const char *ip_addr = argv[1];
-    int port = atoi(argv[2]);
-
-    if (port == 0) {
-        fprintf(stderr, "Args Error!\nCommand help: ./server <ip-address> <port>\n");
-        return 1;
+    if (*help) {
+        audio_server_display_usage(stdout);
+        return 0;
     }
 
-    int ok = audio_server_init(&s, ip_addr, port);
-    LOG_INFO("Server listening on %s:%d", ip_addr, port);
+    int ok = audio_server_init(&s, *ipaddr, *port);
+    LOG_INFO("Server listening on %s:%d", *ipaddr, *port);
 
     if (!ok) {
+        LOG_ERRNO();
         audio_server_destroy(&s);
         return 1;
     }
@@ -109,7 +120,7 @@ int main(int argc, char **argv) {
         }
 
         if (N == -1) {
-            LOG_ERROR("epoll_wait(): %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("epoll_wait");
             audio_server_destroy(&s);
             return 1;
         }
@@ -134,7 +145,7 @@ int main(int argc, char **argv) {
                 ssize_t bytes_readed = recv(event_sock, &req.header, sizeof(req.header), MSG_NOSIGNAL);
 
                 if (bytes_readed == -1) {
-                    LOG_ERROR("recv() failed: %s", strerror(errno));
+                    LOG_CUSTOM_ERRNO("recv");
                     break;
                 }
 
@@ -195,20 +206,14 @@ void audio_server_transmit_packet(Client_State *c) {
     ssize_t ok = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
 
     if (ok == -1) {
-        LOG_ERROR("send() failed: %s", strerror(errno));
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            LOG_ERROR("Would block");
-        }
+        LOG_CUSTOM_ERRNO("send");
         return;
     }
 
     ok = send(sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
 
     if (ok == -1) {
-        LOG_ERROR("send() failed: %s", strerror(errno));
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            LOG_ERROR("Would block");
-        }
+        LOG_CUSTOM_ERRNO("send");
         return;
     }
     if (ok == 0) {
@@ -226,13 +231,13 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (fd == -1) {
-        LOG_ERROR("socket() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("socket");
         return -1;
     }
 
     int opt = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
-        LOG_ERROR("setsockopt() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("setsockopt");
         return -1;
     }
 
@@ -245,7 +250,7 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
 
     if (ret_val != 0) {
-        LOG_ERROR("bind() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("bind");
         return -1;
     }
 
@@ -253,7 +258,7 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     ret_val = listen(fd, BACKLOG);
 
     if (ret_val != 0) {
-        LOG_ERROR("listen() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("listen");
         return -1;
     }
 
@@ -277,7 +282,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     s->epollfd = epoll_create1(0);
 
     if (s->epollfd == -1) {
-        LOG_ERROR("epoll_create1() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("epoll_create1");
         return 0;
     }
 
@@ -285,7 +290,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     ev.data.fd = s->sockfd;
 
     if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->sockfd, &ev) == -1) {
-        LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("epoll_ctl");
         return 0;
     }
 
@@ -321,7 +326,7 @@ void audio_server_load_audios(Audio_Server *s) {
     DIR *dir = opendir(AUDIODIR);
 
     if (!dir) {
-        LOG_ERROR("Error to load " AUDIODIR " directory: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("Error to load " AUDIODIR " directory");
         return;
     }
 
@@ -339,7 +344,7 @@ void audio_server_load_audios(Audio_Server *s) {
     }
 
     if (closedir(dir) == -1) {
-        LOG_ERROR("Error to close " AUDIODIR " directory: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("Error to close " AUDIODIR " directory");
     }
 
     LOG_INFO("Loaded audios");
@@ -349,7 +354,7 @@ void audio_server_handle_accept(Audio_Server *s) {
     int fd = accept(s->sockfd, NULL, NULL);
 
     if (fd == -1) {
-        LOG_ERROR("accept(): %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("accept");
         return;
     }
 
@@ -358,7 +363,7 @@ void audio_server_handle_accept(Audio_Server *s) {
     c.ev.data.fd = fd;
 
     if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, fd, &c.ev) == -1) {
-        LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("epoll_ctl");
         close(fd);
         return;
     }
@@ -379,7 +384,7 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock) {
         hmdel(s->clients, event_sock);
 #pragma GCC diagnostic pop
         if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
-            LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("epoll_ctl");
         }
         close(event_sock);
     }
@@ -395,17 +400,17 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
         strcpy(res->buf, s->audios[i].key);
         ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
         if (ok == -1) {
-            LOG_ERROR("send() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("send");
         }
         ok = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
         if (ok == -1) {
-            LOG_ERROR("send() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("send");
         }
     }
     res->header.code = STATUS_LIST_END;
     ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
-        LOG_ERROR("send() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("send");
     }
 }
 
@@ -413,7 +418,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
     LOG_INFO("Client request /start");
     ssize_t ok = recv(event_sock, req->buf, req->header.len, MSG_NOSIGNAL);
     if (ok == -1) {
-        LOG_ERROR("recv() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("recv");
     }
     char *basename = req->buf;
     ptrdiff_t idx = shgeti(s->audios, basename);
@@ -423,7 +428,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         res->header.code = STATUS_ERR_NO_FILE;
         ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (ok == -1) {
-            LOG_ERROR("send() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("send");
         }
         return;
     }
@@ -433,11 +438,11 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
 
     if (fd == -1) {
         LOG_ERROR("Failed to open indexed file. Maybe has been deleted.");
-        LOG_ERROR("open() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("open");
         res->header.code = STATUS_ERR_NO_FILE;
         ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (ok == -1) {
-            LOG_ERROR("send() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("send");
         }
     }
 
@@ -453,13 +458,13 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         c->ev.events |= EPOLLOUT;
 
         if (epoll_ctl(s->epollfd, EPOLL_CTL_MOD, event_sock, &c->ev) == -1) {
-            LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("epoll_ctl");
         }
     }
     res->header.code = STATUS_OK;
     ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
-        LOG_ERROR("send() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("send");
     }
 }
 
@@ -472,14 +477,14 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
         c->ev.events &= ~EPOLLOUT;
 
         if (epoll_ctl(s->epollfd, EPOLL_CTL_MOD, event_sock, &c->ev) == -1) {
-            LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("epoll_ctl");
         }
     }
     res->header.kind = KIND_STOP;
     res->header.code = STATUS_OK;
     ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
-        LOG_ERROR("send() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("send");
     }
 }
 
@@ -492,13 +497,13 @@ void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, R
         c->ev.events |= EPOLLOUT;
 
         if (epoll_ctl(s->epollfd, EPOLL_CTL_MOD, event_sock, &c->ev) == -1) {
-            LOG_ERROR("epoll_ctl() failed: %s", strerror(errno));
+            LOG_CUSTOM_ERRNO("epoll_ctl");
         }
     }
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
     ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (ok == -1) {
-        LOG_ERROR("send() failed: %s", strerror(errno));
+        LOG_CUSTOM_ERRNO("send");
     }
 }

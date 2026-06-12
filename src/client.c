@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <limits.h>
+#include <linux/limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -16,6 +17,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vlc/vlc.h>
+
+#define FLAG_IMPLEMENTATION
+#include "flag.h"
 
 #define MB(x) ((1 << 20) * x) // 1MB
 #define HELP_MSG                                                                                                       \
@@ -86,28 +90,36 @@ void audio_client_handle_exit(Audio_Client *c);
 
 Message_Kind audio_client_parse_str_to_enum(const char *str);
 
+void audio_client_display_usage(FILE *fp) {
+    fprintf(fp, "USAGE: ./client [OPTIONS]\n");
+    fprintf(fp, "OPTIONS:\n");
+    flag_print_options(fp);
+}
+
 int main(int argc, char **argv) {
     Audio_Client c;
 
     logger_initConsoleLogger(stdout);
     logger_setLevel(LogLevel_DEBUG);
 
-    if (argc < 3) {
-        fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-port>\n");
+    int *help = (int *)flag_bool("help", false, "Print this help");
+    char **ipaddr = flag_str("ipaddr", "", "Provide the server IP Address");
+    int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
+
+    if (!flag_parse(argc, argv) || !**ipaddr) {
+        audio_client_display_usage(stderr);
         return 1;
     }
 
-    const char *server_ip_addr = argv[1];
-    int server_port = atoi(argv[2]);
-
-    if (server_port == 0) {
-        fprintf(stderr, "Args Error!\nCommand help: ./client <server-ip-address> <server-port>\n");
-        return 1;
+    if (*help) {
+        audio_client_display_usage(stdout);
+        return 0;
     }
 
-    int ok = audio_client_init(&c, server_ip_addr, server_port);
+    int ok = audio_client_init(&c, *ipaddr, *port);
 
     if (!ok) {
+        LOG_ERRNO();
         audio_client_destroy(&c);
         return 1;
     }
@@ -126,7 +138,7 @@ int main(int argc, char **argv) {
         }
 
         if (N == -1) {
-            LOG_ERROR("epoll_wait");
+            LOG_CUSTOM_ERRNO("epoll_wait");
             audio_client_destroy(&c);
             return 1;
         }
@@ -136,7 +148,6 @@ int main(int argc, char **argv) {
             int event_sock = events[i].data.fd;
 
             if (event_sock == STDIN_FILENO && event_mask & EPOLLIN) {
-                Request req = {0};
                 char prompt[NAME_MAX] = {0};
                 read(STDIN_FILENO, prompt, sizeof(prompt));
                 char *ptr = strchr(prompt, '\n');
@@ -147,56 +158,62 @@ int main(int argc, char **argv) {
                 if (*prompt == '\0') {
                     continue;
                 }
-                if (strcmp(prompt, "/exit") == 0) {
+
+                Message_Kind kind = audio_client_parse_str_to_enum(prompt);
+
+                if (kind == KIND_NONE) {
+                    printf("Invalid command\n");
+                    continue;
+                }
+
+                if (kind == KIND_EXIT) {
                     signaled = 1;
                     break;
                 }
-                if (strcmp(prompt, "/help") == 0) {
+
+                if (kind == KIND_HELP) {
                     printf(HELP_MSG);
                     continue;
                 }
-                if (strcmp(prompt, "/stats") == 0) {
+
+                if (kind == KIND_STATS) {
                     audio_client_stats_print(&c.stats);
                     continue;
                 }
-                if (strcmp(prompt, "/reset") == 0) {
+
+                if (kind == KIND_RESET) {
                     audio_client_stats_reset(&c.stats);
-                    printf("Metrics reset.\n");
                     continue;
                 }
 
-                req.header.kind = audio_client_parse_str_to_enum(prompt);
+                Request req = {0};
+                req.header.kind = kind;
 
-                if (req.header.kind == KIND_NONE) {
-                    break;
-                }
-
-                if (req.header.kind == KIND_START) {
+                if (kind == KIND_START) {
                     char *filename = prompt + sizeof("/start ") - 1;
                     strcpy(req.buf, filename);
                     req.header.len = strlen(filename) + 1;
                 }
 
-                if ((req.header.kind == KIND_STOP && c.is_playing == 0) ||
-                    (req.header.kind == KIND_RESUME && (c.has_playered == 0 || c.is_playing == 1))) {
+                if ((kind == KIND_STOP && c.is_playing == 0) ||
+                    (kind == KIND_RESUME && (c.has_playered == 0 || c.is_playing == 1))) {
                     break;
                 }
 
-                ssize_t ok = send(c.sockfd, &req.header, sizeof(req.header),
-                                  MSG_NOSIGNAL | (req.header.kind == KIND_START ? MSG_MORE : 0));
-                if (ok == -1) {
-                    LOG_ERROR("send");
+                ssize_t bytes_written =
+                    send(c.sockfd, &req.header, sizeof(req.header), MSG_NOSIGNAL | (kind == KIND_START ? MSG_MORE : 0));
+                if (bytes_written == -1) {
+                    LOG_CUSTOM_ERRNO("send");
+                    continue;
+                }
+
+                if (kind != KIND_START) {
                     break;
                 }
 
-                if (req.header.kind != KIND_START) {
-                    break;
-                }
-
-                ok = send(c.sockfd, req.buf, req.header.len, MSG_NOSIGNAL);
-                if (ok == -1) {
-                    LOG_ERROR("send");
-                    break;
+                bytes_written = send(c.sockfd, req.buf, req.header.len, MSG_NOSIGNAL);
+                if (bytes_written == -1) {
+                    LOG_CUSTOM_ERRNO("send");
                 }
             }
 
@@ -209,10 +226,10 @@ int main(int argc, char **argv) {
 
                 if (event_mask & EPOLLIN) {
                     Response res = {0};
-                    ssize_t ok = recv(c.sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
+                    ssize_t bytes_readed = recv(c.sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
 
-                    if (ok == -1) {
-                        LOG_ERROR("recv");
+                    if (bytes_readed == -1) {
+                        LOG_CUSTOM_ERRNO("recv");
                         break;
                     }
 
@@ -222,13 +239,13 @@ int main(int argc, char **argv) {
                             printf("End of list\n");
                             break;
                         }
-                        ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+                        bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
 
-                        if (ok == -1) {
-                            LOG_ERROR("recv");
+                        if (bytes_readed == -1) {
+                            LOG_CUSTOM_ERRNO("recv");
                             break;
                         }
-                        printf("| %s |\n", res.buf);
+                        printf("| %s %*s |\n", res.buf, 80 - (int)res.header.len, " ");
                         break;
                     case KIND_START:
                         if (res.header.code == STATUS_ERR_NO_FILE) {
@@ -246,15 +263,15 @@ int main(int argc, char **argv) {
                         libvlc_media_player_play(c.vlc_mp);
                         break;
                     case KIND_STREAM:
-                        ok = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+                        bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
 
-                        if (ok == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                            LOG_ERROR("recv");
+                        if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                            LOG_WARN("Would block");
                             break;
                         }
 
-                        if (ok == -1) {
-                            LOG_ERROR("recv");
+                        if (bytes_readed == -1) {
+                            LOG_CUSTOM_ERRNO("recv");
                             break;
                         }
 
@@ -264,7 +281,7 @@ int main(int argc, char **argv) {
                                                 (1000000 * res.header.tv.tv_sec + res.header.tv.tv_usec);
                         audio_client_stats_update(&c.stats, latency);
 
-                        queue_enqueue(&c.queue, (unsigned char *)res.buf, ok);
+                        queue_enqueue(&c.queue, (unsigned char *)res.buf, bytes_readed);
                         break;
                     default:
                         break;
@@ -281,12 +298,14 @@ int main(int argc, char **argv) {
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port) {
     *c = (Audio_Client){0};
 
-    audio_client_stats_reset(&c->stats);
-
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
-    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+
+    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) == -1) {
+        LOG_CUSTOM_ERRNO("pthread_sigmask");
+        return 0;
+    }
 
     c->sockfd = audio_client_create_tcp_socket(server_addr, server_tcp_port);
 
@@ -296,14 +315,27 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
     c->epollfd = epoll_create1(0);
 
+    if (c->epollfd == -1) {
+        LOG_CUSTOM_ERRNO("epoll_create1");
+        return 0;
+    }
+
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = STDIN_FILENO;
 
-    epoll_ctl(c->epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev);
+    if (epoll_ctl(c->epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev) == -1) {
+        LOG_CUSTOM_ERRNO("epoll_ctl");
+        return 0;
+    }
+
     ev.events = EPOLLRDHUP | EPOLLIN;
     ev.data.fd = c->sockfd;
-    epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sockfd, &ev);
+
+    if (epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sockfd, &ev) == -1) {
+        LOG_CUSTOM_ERRNO("epoll_ctl");
+        return 0;
+    }
 
     queue_init(&c->queue, MB(1));
 
@@ -311,19 +343,34 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     c->vlc_instance = libvlc_new(1, args);
 
     if (c->vlc_instance == NULL) {
-        fprintf(stderr, "Failed to init vlc: %s\n", strerror(errno));
+        LOG_CUSTOM_ERRNO("libvlc_new");
         return 0;
     }
 
     libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
+
+    if (!vlc_media) {
+        LOG_CUSTOM_ERRNO("libvlc_media_new_callbacks");
+        return 0;
+    }
+
     c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
+
+    if (!c->vlc_mp) {
+        LOG_CUSTOM_ERRNO("libvlc_media_player_new_from_media");
+        return 0;
+    }
+
     libvlc_media_release(vlc_media);
 
     if (signals_sigint_sigaction() == -1) {
         return 0;
     }
 
-    pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+    if (pthread_sigmask(SIG_UNBLOCK, &mask, NULL) == -1) {
+        LOG_CUSTOM_ERRNO("pthread_sigmask");
+        return 0;
+    }
 
     return 1;
 }
@@ -332,7 +379,7 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (fd == -1) {
-        fprintf(stderr, "Failed to create socket: %s\n", strerror(errno));
+        LOG_CUSTOM_ERRNO("socket");
         return -1;
     }
 
@@ -342,7 +389,7 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
     srv_addr.sin_port = htons(port);
 
     if (connect(fd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) == -1) {
-        fprintf(stderr, "Failed to connect socket: %s\n", strerror(errno));
+        LOG_CUSTOM_ERRNO("connect");
         return -1;
     }
 
@@ -391,7 +438,18 @@ Message_Kind audio_client_parse_str_to_enum(const char *str) {
     if (strcmp(str, "/resume") == 0) {
         return KIND_RESUME;
     }
-
+    if (strcmp(str, "/exit") == 0) {
+        return KIND_EXIT;
+    }
+    if (strcmp(str, "/help") == 0) {
+        return KIND_HELP;
+    }
+    if (strcmp(str, "/stats") == 0) {
+        return KIND_STATS;
+    }
+    if (strcmp(str, "/reset") == 0) {
+        return KIND_RESET;
+    }
     return KIND_NONE;
 }
 
@@ -429,10 +487,12 @@ void audio_client_stats_reset(Delay_Stats *s) {
 }
 
 void audio_client_stats_update(Delay_Stats *s, unsigned long delay_us) {
-    if (delay_us < s->min_us)
+    if (delay_us < s->min_us) {
         s->min_us = delay_us;
-    if (delay_us > s->max_us)
+    }
+    if (delay_us > s->max_us) {
         s->max_us = delay_us;
+    }
     s->sum_us += delay_us;
     s->count++;
 }
