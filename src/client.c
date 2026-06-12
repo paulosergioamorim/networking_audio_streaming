@@ -3,6 +3,8 @@
 #include "queue.h"
 #include "signals.h"
 #include <arpa/inet.h>
+#include <asm-generic/errno-base.h>
+#include <asm-generic/errno.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -21,18 +23,19 @@
 #define FLAG_IMPLEMENTATION
 #include "flag.h"
 
-#define MB(x) ((1 << 20) * x) // 1MB
+#define KB(x) ((1 << 10) * x)
 #define HELP_MSG                                                                                                       \
     ("|=======================================|\n"                                                                     \
      "| /help         -> more info            |\n"                                                                     \
      "| /list         -> list avaliable songs |\n"                                                                     \
-     "| /start <file> -> start streaming file |\n"                                                                     \
+     "| /start <idx>  -> start streaming file |\n"                                                                     \
      "| /stats        -> show metrics         |\n"                                                                     \
      "| /stop         -> stop streaming       |\n"                                                                     \
      "| /reset        -> reset metrics        |\n"                                                                     \
      "| /resume       -> resume streaming     |\n"                                                                     \
      "| /exit or ^C   -> to exit              |\n"                                                                     \
      "|=======================================|\n")
+#define LIST_LINE_HORIZONTAL ("|----------------------------------------------------------------------------------|\n")
 
 // Registrar só pacotes de streaming?
 typedef struct {
@@ -100,11 +103,11 @@ int main(int argc, char **argv) {
     Audio_Client c;
 
     logger_initConsoleLogger(stdout);
-    logger_setLevel(LogLevel_DEBUG);
 
     int *help = (int *)flag_bool("help", false, "Print this help");
     char **ipaddr = flag_str("ipaddr", "", "Provide the server IP Address");
     int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
+    int *debug = (int *)flag_bool("debug", false, "Print debug levels");
 
     if (!flag_parse(argc, argv) || !**ipaddr) {
         audio_client_display_usage(stderr);
@@ -114,6 +117,10 @@ int main(int argc, char **argv) {
     if (*help) {
         audio_client_display_usage(stdout);
         return 0;
+    }
+
+    if (*debug) {
+        logger_setLevel(LogLevel_DEBUG);
     }
 
     int ok = audio_client_init(&c, *ipaddr, *port);
@@ -129,6 +136,7 @@ int main(int argc, char **argv) {
     const int MAX_EVENTS = 10;
     int N = 0;
     struct epoll_event events[MAX_EVENTS];
+    int kind_list_start = 0;
 
     while (!signaled) {
         N = epoll_wait(c.epollfd, events, MAX_EVENTS, -1);
@@ -190,9 +198,13 @@ int main(int argc, char **argv) {
                 req.header.kind = kind;
 
                 if (kind == KIND_START) {
-                    char *filename = prompt + sizeof("/start ") - 1;
-                    strcpy(req.buf, filename);
-                    req.header.len = strlen(filename) + 1;
+                    char *idx_str = prompt + sizeof("/start ") - 1;
+                    long idx = atol(idx_str);
+                    if (idx <= 0) {
+                        printf("Invalid audio index\n");
+                        continue;
+                    }
+                    req.buf = idx;
                 }
 
                 if ((kind == KIND_STOP && c.is_playing == 0) ||
@@ -200,20 +212,10 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                ssize_t bytes_written =
-                    send(c.sockfd, &req.header, sizeof(req.header), MSG_NOSIGNAL | (kind == KIND_START ? MSG_MORE : 0));
+                ssize_t bytes_written = send(c.sockfd, &req, sizeof(req), MSG_NOSIGNAL);
                 if (bytes_written == -1) {
                     LOG_CUSTOM_ERRNO("send");
                     continue;
-                }
-
-                if (kind != KIND_START) {
-                    break;
-                }
-
-                bytes_written = send(c.sockfd, req.buf, req.header.len, MSG_NOSIGNAL);
-                if (bytes_written == -1) {
-                    LOG_CUSTOM_ERRNO("send");
                 }
             }
 
@@ -227,42 +229,60 @@ int main(int argc, char **argv) {
                 if (event_mask & EPOLLIN) {
                     Response res = {0};
                     ssize_t bytes_readed = recv(c.sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
+                    Message_Kind kind = res.header.kind;
 
                     if (bytes_readed == -1) {
                         LOG_CUSTOM_ERRNO("recv");
                         break;
                     }
 
-                    switch (res.header.kind) {
-                    case KIND_LIST:
+                    if (kind == KIND_LIST) {
                         if (res.header.code == STATUS_LIST_END) {
-                            printf("End of list\n");
-                            break;
+                            printf(LIST_LINE_HORIZONTAL);
+                            kind_list_start = 0;
+                            continue;
                         }
                         bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
 
                         if (bytes_readed == -1) {
                             LOG_CUSTOM_ERRNO("recv");
-                            break;
+                            continue;
                         }
+
+                        if (!kind_list_start) {
+                            printf(LIST_LINE_HORIZONTAL);
+                            kind_list_start = 1;
+                        }
+
                         printf("| %s %*s |\n", res.buf, 80 - (int)res.header.len, " ");
-                        break;
-                    case KIND_START:
+                        continue;
+                    }
+
+                    if (kind == KIND_START) {
                         if (res.header.code == STATUS_ERR_NO_FILE) {
                             printf("No audio file\n");
                             break;
                         }
                         audio_client_handle_start(&c);
-                        break;
-                    case KIND_STOP:
+                        printf("Start audio streaming...\n");
+                        continue;
+                    }
+
+                    if (kind == KIND_STOP) {
                         c.is_playing = 0;
                         libvlc_media_player_pause(c.vlc_mp);
-                        break;
-                    case KIND_RESUME:
+                        printf("Stop audio streaming...\n");
+                        continue;
+                    }
+
+                    if (kind == KIND_RESUME) {
                         c.is_playing = 1;
                         libvlc_media_player_play(c.vlc_mp);
-                        break;
-                    case KIND_STREAM:
+                        printf("Resume audio streaming...\n");
+                        continue;
+                    }
+
+                    if (kind == KIND_STREAM) {
                         bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
 
                         if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -282,10 +302,10 @@ int main(int argc, char **argv) {
                         audio_client_stats_update(&c.stats, latency);
 
                         queue_enqueue(&c.queue, (unsigned char *)res.buf, bytes_readed);
-                        break;
-                    default:
-                        break;
+                        continue;
                     }
+
+                    LOG_DEBUG("Invalid response");
                 }
             }
         }
@@ -337,7 +357,7 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
         return 0;
     }
 
-    queue_init(&c->queue, MB(1));
+    queue_init(&c->queue, KB(32));
 
     const char *args[] = {"--quiet"};
     c->vlc_instance = libvlc_new(1, args);

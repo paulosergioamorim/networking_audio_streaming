@@ -23,12 +23,12 @@ typedef enum { STATUS_NONE, STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, ST
 
 typedef struct {
     Message_Kind kind;
-    size_t len; // the lenght of 'buf'
 } Request_Header;
 
 typedef struct {
     Request_Header header;
-    char buf[NAME_MAX]; // only KIND_START messages use this
+    // only KIND_START messages use this. buf is the audio index + 1. Because it's small, all messages send it
+    size_t buf;
 } Request;
 
 typedef struct {

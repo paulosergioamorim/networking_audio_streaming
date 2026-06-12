@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <linux/limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -38,7 +39,7 @@ typedef struct {
 } Audio;
 
 typedef struct {
-    char *key; // basename
+    char *key; // idx + basename
     Audio value;
 } Audios;
 
@@ -46,6 +47,7 @@ typedef struct {
     int sockfd;
     int epollfd;
     Clients_State *clients;
+    char *audios_list_str;
     Audios *audios;
 } Audio_Server;
 
@@ -142,7 +144,7 @@ int main(int argc, char **argv) {
             if (event_mask & EPOLLIN) {
                 Request req = {0};
                 Response res = {0};
-                ssize_t bytes_readed = recv(event_sock, &req.header, sizeof(req.header), MSG_NOSIGNAL);
+                ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_NOSIGNAL);
 
                 if (bytes_readed == -1) {
                     LOG_CUSTOM_ERRNO("recv");
@@ -178,7 +180,7 @@ int main(int argc, char **argv) {
                     continue;
                 }
                 audio_server_transmit_packet(c);
-                usleep(5000);
+                usleep(2000);
             }
         }
     }
@@ -332,14 +334,18 @@ void audio_server_load_audios(Audio_Server *s) {
 
     struct dirent *de;
 
+    size_t i = 1;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
             char path[NAME_MAX];
             char *name = de->d_name;
+            char key[277]; // the compiler told me that :)
+            snprintf(key, sizeof(key), "%ld - %s", i, name);
             strcpy(path, AUDIODIR "/");
             strcat(path, name);
-            Audio audio = {.path = strdup(path), .len = strlen(name) + 1};
-            shput(s->audios, name, audio);
+            Audio audio = {.path = strdup(path), .len = strlen(key) + 1};
+            shput(s->audios, key, audio);
+            i++;
         }
     }
 
@@ -416,15 +422,10 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
 
 void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Response *res) {
     LOG_INFO("Client request /start");
-    ssize_t ok = recv(event_sock, req->buf, req->header.len, MSG_NOSIGNAL);
-    if (ok == -1) {
-        LOG_CUSTOM_ERRNO("recv");
-    }
-    char *basename = req->buf;
-    ptrdiff_t idx = shgeti(s->audios, basename);
     res->header.kind = KIND_START;
+    size_t idx = req->buf - 1;
 
-    if (idx == -1) {
+    if (!(0 <= idx && idx < shlen(s->audios))) {
         res->header.code = STATUS_ERR_NO_FILE;
         ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (ok == -1) {
@@ -462,8 +463,8 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         }
     }
     res->header.code = STATUS_OK;
-    ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-    if (ok == -1) {
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
     }
 }
