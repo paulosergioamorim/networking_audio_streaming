@@ -6,10 +6,13 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/limits.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
 #define STB_DS_IMPLEMENTATION
@@ -23,15 +26,23 @@
 
 typedef struct {
     size_t offset;
-    struct epoll_event ev;
     int playing; // is streaming?
     int fd;
+    int sockfd;
 } Client_State;
 
 typedef struct {
     int key; // the connection socket descriptor
     Client_State value;
 } Clients_State;
+
+typedef struct {
+} Empty;
+
+typedef struct {
+    int key;
+    Empty value;
+} Active_Clients;
 
 typedef struct {
     const char *path; // relative path from pwd
@@ -46,8 +57,9 @@ typedef struct {
 typedef struct {
     int sockfd;
     int epollfd;
+    int timerfd;
     Clients_State *clients;
-    char *audios_list_str;
+    Active_Clients *active_clients;
     Audios *audios;
 } Audio_Server;
 
@@ -132,22 +144,44 @@ int main(int argc, char **argv) {
 
         for (int i = 0; i < N; i++) {
             uint32_t event_mask = events[i].events;
-            int event_sock = events[i].data.fd;
+            int eventfd = events[i].data.fd;
 
-            if (event_sock == s.sockfd) {
+            if (eventfd == s.sockfd) {
                 audio_server_handle_accept(&s);
                 continue;
             }
 
+            if (eventfd == s.timerfd) {
+                uint64_t expdir;
+                ssize_t bytes_readed = read(s.timerfd, &expdir, sizeof(expdir));
+
+                if (bytes_readed == -1) {
+                    LOG_CUSTOM_ERRNO("read");
+                }
+
+                for (size_t i = 0; i < hmlen(s.active_clients); i++) {
+                    int key = s.active_clients[i].key;
+                    ptrdiff_t idx = hmgeti(s.clients, key);
+                    if (idx == -1) {
+                        continue;
+                    }
+                    Client_State *c = &s.clients[idx].value;
+                    LOG_DEBUG("Enviando pacotes de stream para o cliente %d\n", key);
+                    audio_server_transmit_packet(c);
+                }
+
+                continue;
+            }
+
             if (event_mask & EPOLLRDHUP) {
-                audio_server_handle_exit(&s, event_sock);
+                audio_server_handle_exit(&s, eventfd);
                 continue;
             }
 
             if (event_mask & EPOLLIN) {
                 Request req = {0};
                 Response res = {0};
-                ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_NOSIGNAL);
+                ssize_t bytes_readed = recv(eventfd, &req, sizeof(req), MSG_NOSIGNAL);
 
                 if (bytes_readed == -1) {
                     LOG_CUSTOM_ERRNO("recv");
@@ -156,34 +190,21 @@ int main(int argc, char **argv) {
 
                 switch (req.header.kind) {
                 case KIND_LIST:
-                    audio_server_handle_list(&s, event_sock, &req, &res);
+                    audio_server_handle_list(&s, eventfd, &req, &res);
                     break;
                 case KIND_START:
-                    audio_server_handle_start(&s, event_sock, &req, &res);
+                    audio_server_handle_start(&s, eventfd, &req, &res);
                     break;
                 case KIND_STOP:
-                    audio_server_handle_stop(&s, event_sock, &req, &res);
+                    audio_server_handle_stop(&s, eventfd, &req, &res);
                     break;
                 case KIND_RESUME:
-                    audio_server_handle_resume(&s, event_sock, &req, &res);
+                    audio_server_handle_resume(&s, eventfd, &req, &res);
                     break;
                 default:
                     LOG_ERROR("Invalid request");
                     break;
                 }
-            }
-
-            if (event_mask & EPOLLOUT) {
-                ptrdiff_t idx = hmgeti(s.clients, event_sock);
-                if (idx == -1) {
-                    continue;
-                }
-                Client_State *c = &s.clients[idx].value;
-                if (!c->playing) {
-                    continue;
-                }
-                audio_server_transmit_packet(c);
-                usleep(2000);
             }
         }
     }
@@ -195,37 +216,42 @@ int main(int argc, char **argv) {
 
 void audio_server_transmit_packet(Client_State *c) {
     Response res = {0};
-    int sockfd = c->ev.data.fd;
+    int sockfd = c->sockfd;
     res.header.kind = KIND_STREAM;
 
     gettimeofday(&res.header.tv, NULL);
     ssize_t bytes_read = pread(c->fd, res.buf, sizeof(res.buf), c->offset);
 
-    if (bytes_read <= 0) {
+    if (bytes_read == -1) {
+        LOG_CUSTOM_ERRNO("pread");
+        return;
+    }
+
+    if (bytes_read == 0) {
         c->playing = 0;
         c->offset = 0;
         return;
     }
 
     res.header.len = bytes_read;
-    ssize_t ok = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
+    ssize_t bytes_written = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
 
-    if (ok == -1) {
+    if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
         return;
     }
 
-    ok = send(sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+    bytes_written = send(sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
 
-    if (ok == -1) {
+    if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
         return;
     }
-    if (ok == 0) {
+    if (bytes_written == 0) {
         c->playing = 0;
         return;
     }
-    c->offset += ok;
+    c->offset += bytes_written;
 }
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
@@ -299,6 +325,31 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
         return 0;
     }
 
+    // timer for send streaming packets
+    struct itimerspec tspec = {0};
+    s->timerfd = timerfd_create(CLOCK_REALTIME, 0);
+
+    if (s->timerfd == -1) {
+        LOG_CUSTOM_ERRNO("timerfd_create");
+        return 0;
+    }
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+        LOG_CUSTOM_ERRNO("clock_gettime");
+        return 0;
+    }
+
+    tspec.it_interval.tv_sec = 0;
+    tspec.it_interval.tv_nsec = 100000000;
+    tspec.it_value.tv_sec = now.tv_sec;
+    tspec.it_value.tv_nsec = now.tv_nsec;
+
+    if (timerfd_settime(s->timerfd, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
+        LOG_CUSTOM_ERRNO("timerfd_settime");
+        return 0;
+    }
+
     audio_server_load_audios(s);
 
     return 1;
@@ -313,6 +364,10 @@ void audio_server_destroy(Audio_Server *s) {
         }
     }
     hmfree(s->clients);
+    hmfree(s->active_clients);
+    if (s->timerfd) {
+        close(s->timerfd);
+    }
     if (s->sockfd > 0) {
         shutdown(s->sockfd, SHUT_RDWR);
         close(s->sockfd);
@@ -342,7 +397,7 @@ void audio_server_load_audios(Audio_Server *s) {
         if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
             char path[NAME_MAX];
             char *name = de->d_name;
-            char key[277]; // the compiler told me that :)
+            char key[279]; // the compiler told me that :)
             snprintf(key, sizeof(key), "%ld - %s", i, name);
             strcpy(path, AUDIODIR "/");
             strcat(path, name);
@@ -360,6 +415,7 @@ void audio_server_load_audios(Audio_Server *s) {
 }
 
 void audio_server_handle_accept(Audio_Server *s) {
+    struct epoll_event ev = {0};
     int fd = accept(s->sockfd, NULL, NULL);
 
     if (fd == -1) {
@@ -368,10 +424,10 @@ void audio_server_handle_accept(Audio_Server *s) {
     }
 
     Client_State c = {0};
-    c.ev.events = EPOLLRDHUP | EPOLLIN;
-    c.ev.data.fd = fd;
+    ev.events = EPOLLRDHUP | EPOLLIN;
+    ev.data.fd = fd;
 
-    if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, fd, &c.ev) == -1) {
+    if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
         LOG_CUSTOM_ERRNO("epoll_ctl");
         close(fd);
         return;
@@ -391,7 +447,13 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
         hmdel(s->clients, event_sock);
+        if (hmgeti(s->active_clients, event_sock) >= 0) {
+            hmdel(s->active_clients, event_sock);
 #pragma GCC diagnostic pop
+            if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, s->timerfd, NULL) == -1) {
+                LOG_CUSTOM_ERRNO("epoll_ctl");
+            }
+        }
         if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
             LOG_CUSTOM_ERRNO("epoll_ctl");
         }
@@ -407,18 +469,18 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
     for (int i = 0; i < shlen(s->audios); i++) {
         res->header.len = s->audios[i].value.len;
         strcpy(res->buf, s->audios[i].key);
-        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
-        if (ok == -1) {
+        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
+        if (bytes_written == -1) {
             LOG_CUSTOM_ERRNO("send");
         }
-        ok = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
-        if (ok == -1) {
+        bytes_written = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
+        if (bytes_written == -1) {
             LOG_CUSTOM_ERRNO("send");
         }
     }
     res->header.code = STATUS_LIST_END;
-    ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-    if (ok == -1) {
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
     }
 }
@@ -430,8 +492,8 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
 
     if (!(0 <= idx && idx < shlen(s->audios))) {
         res->header.code = STATUS_ERR_NO_FILE;
-        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-        if (ok == -1) {
+        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+        if (bytes_written == -1) {
             LOG_CUSTOM_ERRNO("send");
         }
         return;
@@ -444,8 +506,8 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         LOG_ERROR("Failed to open indexed file. Maybe has been deleted.");
         LOG_CUSTOM_ERRNO("open");
         res->header.code = STATUS_ERR_NO_FILE;
-        ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-        if (ok == -1) {
+        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+        if (bytes_written == -1) {
             LOG_CUSTOM_ERRNO("send");
         }
     }
@@ -459,16 +521,27 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         }
         c->fd = fd;
         c->playing = 1;
-        c->ev.events |= EPOLLOUT;
-
-        if (epoll_ctl(s->epollfd, EPOLL_CTL_MOD, event_sock, &c->ev) == -1) {
-            LOG_CUSTOM_ERRNO("epoll_ctl");
-        }
     }
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
+    }
+
+    idx = hmgeti(s->active_clients, event_sock);
+
+    if (idx == -1) {
+        hmput(s->active_clients, event_sock, (Empty){});
+
+        if (hmlen(s->active_clients) == 1) {
+            struct epoll_event ev = {0};
+            ev.events = EPOLLIN;
+            ev.data.fd = s->timerfd;
+
+            if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->timerfd, &ev) == -1) {
+                LOG_CUSTOM_ERRNO("epoll_ctl");
+            }
+        }
     }
 }
 
@@ -478,17 +551,25 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
     if (idx != -1) {
         Client_State *c = &s->clients[idx].value;
         c->playing = 0;
-        c->ev.events &= ~EPOLLOUT;
-
-        if (epoll_ctl(s->epollfd, EPOLL_CTL_MOD, event_sock, &c->ev) == -1) {
-            LOG_CUSTOM_ERRNO("epoll_ctl");
-        }
     }
     res->header.kind = KIND_STOP;
     res->header.code = STATUS_OK;
-    ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-    if (ok == -1) {
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
+    }
+
+    idx = hmgeti(s->active_clients, event_sock);
+
+    if (idx >= 0) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-value"
+        hmdel(s->active_clients, event_sock);
+#pragma GCC diagnostic pop
+
+        if (hmlen(s->active_clients) == 0 && epoll_ctl(s->epollfd, EPOLL_CTL_DEL, s->timerfd, NULL) == -1) {
+            LOG_CUSTOM_ERRNO("epoll_ctl");
+        }
     }
 }
 
@@ -498,16 +579,27 @@ void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, R
     if (idx != -1) {
         Client_State *c = &s->clients[idx].value;
         c->playing = 1;
-        c->ev.events |= EPOLLOUT;
-
-        if (epoll_ctl(s->epollfd, EPOLL_CTL_MOD, event_sock, &c->ev) == -1) {
-            LOG_CUSTOM_ERRNO("epoll_ctl");
-        }
     }
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
-    ssize_t ok = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-    if (ok == -1) {
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
+    }
+
+    idx = hmgeti(s->active_clients, event_sock);
+
+    if (idx == -1) {
+        hmput(s->active_clients, event_sock, (Empty){});
+
+        if (hmlen(s->active_clients) == 1) {
+            struct epoll_event ev = {0};
+            ev.events = EPOLLIN;
+            ev.data.fd = s->timerfd;
+
+            if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->timerfd, &ev) == -1) {
+                LOG_CUSTOM_ERRNO("epoll_ctl");
+            }
+        }
     }
 }
