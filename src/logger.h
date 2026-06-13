@@ -29,6 +29,7 @@ extern "C" {
 
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 #if defined(_WIN32) || defined(_WIN64)
  #define __FILENAME__ (strrchr(__FILE__, '\\') ? strrchr(__FILE__, '\\') + 1 : __FILE__)
@@ -41,6 +42,9 @@ extern "C" {
 #define LOG_INFO(fmt, ...)  logger_log(LogLevel_INFO , __FILENAME__, __LINE__, fmt, ##__VA_ARGS__)
 #define LOG_WARN(fmt, ...)  logger_log(LogLevel_WARN , __FILENAME__, __LINE__, fmt, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...) logger_log(LogLevel_ERROR, __FILENAME__, __LINE__, fmt, ##__VA_ARGS__)
+#define LOG_ERRNO() logger_log(LogLevel_ERROR, __FILENAME__, __LINE__, "error (%d) %s", errno, strerror(errno))
+#define LOG_CUSTOM_ERRNO(fmt, ...)                                                                                     \
+    logger_log(LogLevel_ERROR, __FILENAME__, __LINE__, "error (%d) %s: " fmt, errno, strerror(errno), ##__VA_ARGS__)
 #define LOG_FATAL(fmt, ...) logger_log(LogLevel_FATAL, __FILENAME__, __LINE__, fmt, ##__VA_ARGS__)
 
 typedef enum {

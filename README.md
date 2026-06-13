@@ -37,7 +37,13 @@ Esse comando gerará dois programas: `client` e `server`.
 Primeiro, execute este comando para iniciar o servidor:
 
 ```shell
-./server <ip-address> <port>
+./server -ipaddr <ipaddr> -port <port>
+```
+
+Para pedir ajuda, execute este comando:
+
+```shell
+./server -help
 ```
 
 #### 2.4 Execute o cliente
@@ -45,8 +51,16 @@ Primeiro, execute este comando para iniciar o servidor:
 Em seguida, execute este comando para iniciar o cliente:
 
 ```shell
-./client <server-ip-address> <server-port>
+./client -ipaddr <server-ipaddr> -port <server-port>
 ```
+
+Para pedir ajuda, execute este comando:
+
+```shell
+./client -help
+```
+
+#### 2.5 Mostrar comandos internos do cliente
 
 Execute o comando `/help` para listar todos os comandos possíveis.
 

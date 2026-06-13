@@ -6,25 +6,29 @@
 #include <sys/time.h>
 
 typedef enum {
-    _,
+    KIND_NONE,
     KIND_LIST,
     KIND_START,
     KIND_STOP,
-    KIND_EXIT,
     KIND_RESUME,
     KIND_STREAM,
+    // this commands is client only
+    KIND_HELP,
+    KIND_EXIT,
+    KIND_STATS,
+    KIND_RESET
 } Message_Kind;
 
-typedef enum { STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
+typedef enum { STATUS_NONE, STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
 
 typedef struct {
     Message_Kind kind;
-    size_t len; // the lenght of 'buf'
 } Request_Header;
 
 typedef struct {
     Request_Header header;
-    char buf[NAME_MAX]; // only KIND_START messages use this
+    // only KIND_START messages use this. buf is the audio index + 1. Because it's small, all messages send it
+    size_t buf;
 } Request;
 
 typedef struct {
