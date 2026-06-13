@@ -3,8 +3,6 @@
 #include "queue.h"
 #include "signals.h"
 #include <arpa/inet.h>
-#include <asm-generic/errno-base.h>
-#include <asm-generic/errno.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -524,11 +522,11 @@ void audio_client_stats_print(const Delay_Stats *s) {
                "|=======================================|\n");
         return;
     }
-    printf("|=======================================|\n"
-           "| packets : %lu                         |\n"
-           "| min     : %lu us                      |\n"
-           "| max     : %lu us                      |\n"
-           "| avg     : %lu us                      |\n"
-           "|=======================================|\n",
+    printf("|=====================================|\n"
+           "| packets : %-5lu                     |\n"
+           "| min     : us %-5lu                  |\n"
+           "| max     : us %-5lu                  |\n"
+           "| avg     : us %-5lu                  |\n"
+           "|=====================================|\n",
            s->count, s->min_us, s->max_us, s->sum_us / s->count);
 }
