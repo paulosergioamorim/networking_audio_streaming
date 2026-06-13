@@ -449,16 +449,8 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock) {
         if (c->fd > 0) {
             close(c->fd);
         }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-value"
+        audio_server_client_unset_streaming(s, event_sock);
         hmdel(s->clients, event_sock);
-        if (hmgeti(s->active_clients, event_sock) >= 0) {
-            hmdel(s->active_clients, event_sock);
-#pragma GCC diagnostic pop
-            if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, s->timerfd, NULL) == -1) {
-                LOG_CUSTOM_ERRNO("epoll_ctl");
-            }
-        }
         if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
             LOG_CUSTOM_ERRNO("epoll_ctl");
         }
