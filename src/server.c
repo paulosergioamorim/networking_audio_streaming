@@ -87,6 +87,10 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res);
 
+void audio_server_client_set_streaming(Audio_Server *s, int key, int fd);
+
+void audio_server_client_unset_streaming(Audio_Server *s, int key);
+
 void audio_server_display_usage(FILE *fp) {
     fprintf(fp, "USAGE: ./server [OPTIONS]\n");
     fprintf(fp, "OPTIONS:\n");
@@ -424,6 +428,7 @@ void audio_server_handle_accept(Audio_Server *s) {
     }
 
     Client_State c = {0};
+    c.sockfd = fd;
     ev.events = EPOLLRDHUP | EPOLLIN;
     ev.data.fd = fd;
 
@@ -512,85 +517,42 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         }
     }
 
-    idx = hmgeti(s->clients, event_sock);
-    if (idx != -1) {
-        Client_State *c = &s->clients[idx].value;
-        c->offset = 0;
-        if (c->fd > 0) {
-            close(c->fd);
-        }
-        c->fd = fd;
-        c->playing = 1;
-    }
+    audio_server_client_set_streaming(s, event_sock, fd);
+
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
     }
-
-    idx = hmgeti(s->active_clients, event_sock);
-
-    if (idx == -1) {
-        hmput(s->active_clients, event_sock, (Empty){});
-
-        if (hmlen(s->active_clients) == 1) {
-            struct epoll_event ev = {0};
-            ev.events = EPOLLIN;
-            ev.data.fd = s->timerfd;
-
-            if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->timerfd, &ev) == -1) {
-                LOG_CUSTOM_ERRNO("epoll_ctl");
-            }
-        }
-    }
 }
 
 void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Response *res) {
     LOG_INFO("Client request /stop");
-    ptrdiff_t idx = hmgeti(s->clients, event_sock);
-    if (idx != -1) {
-        Client_State *c = &s->clients[idx].value;
-        c->playing = 0;
-    }
+    audio_server_client_unset_streaming(s, event_sock);
     res->header.kind = KIND_STOP;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
     }
-
-    idx = hmgeti(s->active_clients, event_sock);
-
-    if (idx >= 0) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-value"
-        hmdel(s->active_clients, event_sock);
-#pragma GCC diagnostic pop
-
-        if (hmlen(s->active_clients) == 0 && epoll_ctl(s->epollfd, EPOLL_CTL_DEL, s->timerfd, NULL) == -1) {
-            LOG_CUSTOM_ERRNO("epoll_ctl");
-        }
-    }
 }
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res) {
     LOG_INFO("Client request /resume");
-    ptrdiff_t idx = hmgeti(s->clients, event_sock);
-    if (idx != -1) {
-        Client_State *c = &s->clients[idx].value;
-        c->playing = 1;
-    }
+    audio_server_client_set_streaming(s, event_sock, 0);
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
     }
+}
 
-    idx = hmgeti(s->active_clients, event_sock);
+void audio_server_client_set_streaming(Audio_Server *s, int key, int fd) {
+    ptrdiff_t idx = hmgeti(s->active_clients, key);
 
     if (idx == -1) {
-        hmput(s->active_clients, event_sock, (Empty){});
+        hmput(s->active_clients, key, (Empty){});
 
         if (hmlen(s->active_clients) == 1) {
             struct epoll_event ev = {0};
@@ -601,5 +563,39 @@ void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, R
                 LOG_CUSTOM_ERRNO("epoll_ctl");
             }
         }
+    }
+
+    idx = hmgeti(s->clients, key);
+
+    if (idx != -1) {
+        Client_State *c = &s->clients[idx].value;
+        if (fd > 0) {
+            if (c->fd > 0) {
+                close(c->fd);
+            }
+            c->fd = fd;
+        }
+        c->playing = 1;
+    }
+}
+
+void audio_server_client_unset_streaming(Audio_Server *s, int key) {
+    ptrdiff_t idx = hmgeti(s->active_clients, key);
+
+    if (idx >= 0) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-value"
+        hmdel(s->active_clients, key);
+#pragma GCC diagnostic pop
+
+        if (hmlen(s->active_clients) == 0 && epoll_ctl(s->epollfd, EPOLL_CTL_DEL, s->timerfd, NULL) == -1) {
+            LOG_CUSTOM_ERRNO("epoll_ctl");
+        }
+    }
+
+    idx = hmgeti(s->clients, key);
+    if (idx != -1) {
+        Client_State *c = &s->clients[idx].value;
+        c->playing = 0;
     }
 }
