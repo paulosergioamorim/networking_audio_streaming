@@ -85,11 +85,12 @@ int main(int argc, char **argv) {
     Audio_Server s;
 
     logger_initConsoleLogger(stdout);
-    logger_setLevel(LogLevel_DEBUG);
+    logger_setLevel(LogLevel_INFO);
 
     bool *help = flag_bool("help", false, "Print this help");
-    char **ipaddr = flag_str("ipaddr", "", "Provide the serving IP Address");
+    char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the serving IP Address");
     uint64_t *port = flag_uint64("port", 8000, "Provide the serving PORT");
+    int *debug = (int *)flag_bool("debug", false, "Print debug levels");
 
     if (!flag_parse(argc, argv) || !**ipaddr) {
         audio_server_display_usage(stderr);
@@ -101,14 +102,16 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    int ok = audio_server_init(&s, *ipaddr, *port);
-    LOG_INFO("Server listening on %s:%d", *ipaddr, *port);
+    if (*debug) {
+        logger_setLevel(LogLevel_DEBUG);
+    }
 
-    if (!ok) {
-        LOG_ERRNO();
+    if (!audio_server_init(&s, *ipaddr, *port)) {
         audio_server_destroy(&s);
         return 1;
     }
+
+    LOG_INFO("Server listening on %s:%d", *ipaddr, *port);
 
     int N = 0;
     const int MAX_EVENTS = 10;

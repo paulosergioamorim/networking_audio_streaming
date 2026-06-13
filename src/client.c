@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
     logger_initConsoleLogger(stdout);
 
     int *help = (int *)flag_bool("help", false, "Print this help");
-    char **ipaddr = flag_str("ipaddr", "", "Provide the server IP Address");
+    char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the server IP Address");
     int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
     int *debug = (int *)flag_bool("debug", false, "Print debug levels");
 
