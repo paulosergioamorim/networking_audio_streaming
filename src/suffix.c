@@ -13,5 +13,6 @@ int suffix_ends_with(const char *str, const char *suffix) {
 }
 
 int suffix_is_audio(const char *str) {
-    return suffix_ends_with(str, ".mp3") || suffix_ends_with(str, ".mp4") || suffix_ends_with(str, ".wav");
+    // only mp3
+    return suffix_ends_with(str, ".mp3");
 }

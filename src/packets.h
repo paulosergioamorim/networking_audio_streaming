@@ -38,7 +38,7 @@ typedef struct {
     size_t len; // the lenght of 'buf'
 } Response_Header;
 
-#define RESPONSE_MAX 4096
+#define RESPONSE_MAX 1600
 
 typedef struct {
     Response_Header header;
