@@ -17,7 +17,7 @@ obj/%.o: src/%.c | objFolder
 	$(CC) $< -o $@ -c $(FLAGS) -MMD -MP
 
 server: obj/server.o obj/signals.o obj/suffix.o obj/logger.o
-	$(CC) $^ -o $@ $(FLAGS) -lpthread
+	$(CC) $^ -o $@ $(FLAGS)
 
 client: obj/client.o obj/signals.o obj/queue.o obj/logger.o
 	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread

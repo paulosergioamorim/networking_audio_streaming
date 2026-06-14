@@ -10,7 +10,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
@@ -26,8 +28,8 @@
 
 typedef struct {
     size_t offset;
-    int playing; // is streaming?
-    int fd;
+    int playing;
+    ptrdiff_t audio_idx;
     int sockfd;
 } Client_State;
 
@@ -45,14 +47,12 @@ typedef struct {
 } Active_Clients;
 
 typedef struct {
-    const char *path; // relative path from pwd
-    int len;          // strlen(key) + 1
-} Audio;
-
-typedef struct {
-    char *key; // idx + basename
-    Audio value;
-} Audios;
+    char display_name[279]; // [idx] basename
+    int display_name_size;  // strlen(display_name) + 1
+    void *buf;              // memory mapping of the file backed by file descriptor fd
+    size_t file_size;       // the file size
+    int fd;                 // file descriptor
+} Audio2;
 
 typedef struct {
     int sockfd;
@@ -60,12 +60,10 @@ typedef struct {
     int timerfd;
     Clients_State *clients;
     Active_Clients *active_clients;
-    Audios *audios;
+    Audio2 *audios;
 } Audio_Server;
 
-void audio_server_transmit_packet(Client_State *c);
-
-void *audio_server_streaming_thread(void *arg);
+void audio_server_transmit_packet(Audio_Server *s, Client_State *c);
 
 int audio_server_create_tcp_socket(const char *addr, int port);
 
@@ -87,9 +85,11 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res);
 
-void audio_server_client_set_streaming(Audio_Server *s, int key, int fd);
+void audio_server_client_set_streaming(Audio_Server *s, int key, int file_idx);
 
 void audio_server_client_unset_streaming(Audio_Server *s, int key);
+
+void audio2_destroy(Audio2 *a);
 
 void audio_server_display_usage(FILE *fp) {
     fprintf(fp, "USAGE: ./server [OPTIONS]\n");
@@ -170,8 +170,7 @@ int main(int argc, char **argv) {
                         continue;
                     }
                     Client_State *c = &s.clients[idx].value;
-                    LOG_DEBUG("Enviando pacotes de stream para o cliente %d\n", key);
-                    audio_server_transmit_packet(c);
+                    audio_server_transmit_packet(&s, c);
                 }
 
                 continue;
@@ -218,26 +217,27 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-void audio_server_transmit_packet(Client_State *c) {
+#define min(a, b) (((a) < (b)) ? a : b)
+
+void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     Response res = {0};
     int sockfd = c->sockfd;
     res.header.kind = KIND_STREAM;
-
     gettimeofday(&res.header.tv, NULL);
-    ssize_t bytes_read = pread(c->fd, res.buf, sizeof(res.buf), c->offset);
+    Audio2 *audio = &s->audios[c->audio_idx];
+    size_t nbytes = min(sizeof(res.buf), audio->file_size - c->offset);
 
-    if (bytes_read == -1) {
-        LOG_CUSTOM_ERRNO("pread");
-        return;
-    }
-
-    if (bytes_read == 0) {
-        c->playing = 0;
+    if (nbytes == 0) {
+        LOG_INFO("Client %d end streaming", sockfd);
+        audio_server_client_unset_streaming(s, sockfd);
+        c->audio_idx = -1;
         c->offset = 0;
         return;
     }
 
-    res.header.len = bytes_read;
+    memcpy(res.buf, audio->buf + c->offset, nbytes);
+    res.header.code = STATUS_OK;
+    res.header.len = nbytes;
     ssize_t bytes_written = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
 
     if (bytes_written == -1) {
@@ -245,17 +245,15 @@ void audio_server_transmit_packet(Client_State *c) {
         return;
     }
 
-    bytes_written = send(sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
+    bytes_written = send(sockfd, res.buf, nbytes, MSG_NOSIGNAL | MSG_DONTWAIT);
 
     if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
         return;
     }
-    if (bytes_written == 0) {
-        c->playing = 0;
-        return;
-    }
+
     c->offset += bytes_written;
+    LOG_DEBUG("Enviados %ld bytes de stream para o cliente %d", bytes_written, sockfd);
 }
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
@@ -374,9 +372,6 @@ void audio_server_destroy(Audio_Server *s) {
     for (int i = 0; i < hmlen(s->clients); i++) {
         Clients_State item = s->clients[i];
         close(item.key);
-        if (item.value.fd > 0) {
-            close(item.value.fd);
-        }
     }
     hmfree(s->clients);
     hmfree(s->active_clients);
@@ -390,14 +385,13 @@ void audio_server_destroy(Audio_Server *s) {
     if (s->epollfd > 0) {
         close(s->epollfd);
     }
-    for (int i = 0; i < shlen(s->audios); i++) {
-        free((void *)s->audios[i].value.path);
+    for (int i = 0; i < arrlen(s->audios); i++) {
+        audio2_destroy(&s->audios[i]);
     }
-    shfree(s->audios); // free keys too
+    arrfree(s->audios);
 }
 
 void audio_server_load_audios(Audio_Server *s) {
-    sh_new_strdup(s->audios); // auto strdup key
     DIR *dir = opendir(AUDIODIR);
 
     if (!dir) {
@@ -409,21 +403,51 @@ void audio_server_load_audios(Audio_Server *s) {
 
     size_t i = 1;
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_type != 'd' && suffix_is_audio(de->d_name)) {
-            char path[NAME_MAX];
-            char *name = de->d_name;
-            char key[279]; // the compiler told me that :)
-            snprintf(key, sizeof(key), "%ld - %s", i, name);
-            strcpy(path, AUDIODIR "/");
-            strcat(path, name);
-            Audio audio = {.path = strdup(path), .len = strlen(key) + 1};
-            shput(s->audios, key, audio);
-            i++;
+        if (!(de->d_type == DT_REG && suffix_is_audio(de->d_name))) {
+            continue;
         }
+
+        Audio2 audio = {0};
+        char *name = de->d_name;
+        const char *display_name_format = "[%ld] %s";
+        audio.display_name_size =
+            1 + snprintf(audio.display_name, sizeof(audio.display_name), display_name_format, i, name);
+        char path[PATH_MAX];
+        strcpy(path, AUDIODIR "/");
+        strcat(path, name);
+        int fd = open(path, O_RDONLY);
+
+        if (fd == -1) {
+            LOG_CUSTOM_ERRNO("open");
+            continue;
+        }
+
+        struct stat st = {0};
+
+        if (fstat(fd, &st) == -1) {
+            LOG_CUSTOM_ERRNO("fstat");
+            close(fd);
+            continue;
+        }
+
+        void *buf = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+
+        if (buf == MAP_FAILED) {
+            LOG_CUSTOM_ERRNO("mmap");
+            close(fd);
+            continue;
+        }
+
+        audio.buf = buf;
+        audio.fd = fd;
+        audio.file_size = st.st_size;
+        arrput(s->audios, audio);
+        i++;
     }
 
     if (closedir(dir) == -1) {
         LOG_CUSTOM_ERRNO("Error to close " AUDIODIR " directory");
+        return;
     }
 
     LOG_INFO("Loaded audios");
@@ -455,21 +479,22 @@ void audio_server_handle_accept(Audio_Server *s) {
 
 void audio_server_handle_exit(Audio_Server *s, int event_sock) {
     ptrdiff_t idx = hmgeti(s->clients, event_sock);
-    if (idx != -1) {
-        Client_State *c = &s->clients[idx].value;
-        if (c->fd > 0) {
-            close(c->fd);
-        }
-        audio_server_client_unset_streaming(s, event_sock);
+
+    if (idx == -1) {
+        LOG_WARN("Invalid client index");
+        return;
+    }
+
+    audio_server_client_unset_streaming(s, event_sock);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
-        hmdel(s->clients, event_sock);
+    hmdel(s->clients, event_sock);
 #pragma GCC diagnostic pop
-        if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
-            LOG_CUSTOM_ERRNO("epoll_ctl");
-        }
-        close(event_sock);
+    if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
+        LOG_CUSTOM_ERRNO("epoll_ctl");
     }
+    close(event_sock);
+
     LOG_INFO("Client disconnected");
 }
 
@@ -477,20 +502,26 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
     LOG_INFO("Client request /list");
     res->header.kind = KIND_LIST;
     res->header.code = STATUS_LIST_CONTINUE;
-    for (int i = 0; i < shlen(s->audios); i++) {
-        res->header.len = s->audios[i].value.len;
-        strcpy(res->buf, s->audios[i].key);
+
+    for (int i = 0; i < arrlen(s->audios); i++) {
+        res->header.len = s->audios[i].display_name_size;
+        strncpy(res->buf, s->audios[i].display_name, sizeof(res->buf));
         ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
+
         if (bytes_written == -1) {
             LOG_CUSTOM_ERRNO("send");
         }
+
         bytes_written = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
+
         if (bytes_written == -1) {
             LOG_CUSTOM_ERRNO("send");
         }
     }
+
     res->header.code = STATUS_LIST_END;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+
     if (bytes_written == -1) {
         LOG_CUSTOM_ERRNO("send");
     }
@@ -501,7 +532,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
     res->header.kind = KIND_START;
     size_t idx = req->buf - 1;
 
-    if (!(0 <= idx && idx < shlen(s->audios))) {
+    if (!(0 <= idx && idx < arrlen(s->audios))) {
         res->header.code = STATUS_ERR_NO_FILE;
         ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (bytes_written == -1) {
@@ -510,20 +541,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         return;
     }
 
-    const char *path = s->audios[idx].value.path;
-    int fd = open(path, O_RDONLY);
-
-    if (fd == -1) {
-        LOG_ERROR("Failed to open indexed file. Maybe has been deleted.");
-        LOG_CUSTOM_ERRNO("open");
-        res->header.code = STATUS_ERR_NO_FILE;
-        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
-        if (bytes_written == -1) {
-            LOG_CUSTOM_ERRNO("send");
-        }
-    }
-
-    audio_server_client_set_streaming(s, event_sock, fd);
+    audio_server_client_set_streaming(s, event_sock, idx);
 
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
@@ -545,7 +563,7 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res) {
     LOG_INFO("Client request /resume");
-    audio_server_client_set_streaming(s, event_sock, 0);
+    audio_server_client_set_streaming(s, event_sock, -1);
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
@@ -554,7 +572,7 @@ void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, R
     }
 }
 
-void audio_server_client_set_streaming(Audio_Server *s, int key, int fd) {
+void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) {
     ptrdiff_t idx = hmgeti(s->active_clients, key);
 
     if (idx == -1) {
@@ -573,16 +591,19 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int fd) {
 
     idx = hmgeti(s->clients, key);
 
-    if (idx != -1) {
-        Client_State *c = &s->clients[idx].value;
-        if (fd > 0) {
-            if (c->fd > 0) {
-                close(c->fd);
-            }
-            c->fd = fd;
-        }
-        c->playing = 1;
+    if (idx == -1) {
+        LOG_WARN("Invalid client index");
+        return;
     }
+
+    Client_State *c = &s->clients[idx].value;
+
+    if (audio_idx != -1) {
+        c->audio_idx = audio_idx;
+        c->offset = 0;
+    }
+
+    c->playing = 1;
 }
 
 void audio_server_client_unset_streaming(Audio_Server *s, int key) {
@@ -600,8 +621,21 @@ void audio_server_client_unset_streaming(Audio_Server *s, int key) {
     }
 
     idx = hmgeti(s->clients, key);
-    if (idx != -1) {
-        Client_State *c = &s->clients[idx].value;
-        c->playing = 0;
+
+    if (idx == -1) {
+        LOG_WARN("Invalid client index");
+        return;
+    }
+
+    Client_State *c = &s->clients[idx].value;
+    c->playing = 0;
+}
+
+void audio2_destroy(Audio2 *a) {
+    if (munmap(a->buf, a->file_size) == -1) {
+        LOG_CUSTOM_ERRNO("munmap");
+    }
+    if (close(a->fd) == -1) {
+        LOG_CUSTOM_ERRNO("close");
     }
 }
