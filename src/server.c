@@ -279,7 +279,18 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     /* Initialize the socket address structure */
     sockaddr.sin_family = AF_INET;
     sockaddr.sin_port = htons(port);
-    sockaddr.sin_addr.s_addr = inet_addr(addr);
+
+    int ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
+
+    if (ok == 0) {
+        LOG_ERROR("Invalid -ipaddr format");
+        return -1;
+    }
+
+    if (ok == -1) {
+        LOG_CUSTOM_ERRNO("inet_pton");
+        return -1;
+    }
 
     /* Step2: bind the socket to port <port> on the local host */
     ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));

@@ -121,10 +121,7 @@ int main(int argc, char **argv) {
         logger_setLevel(LogLevel_DEBUG);
     }
 
-    int ok = audio_client_init(&c, *ipaddr, *port);
-
-    if (!ok) {
-        LOG_ERRNO();
+    if (!audio_client_init(&c, *ipaddr, *port)) {
         audio_client_destroy(&c);
         return 1;
     }
@@ -403,8 +400,19 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
 
     struct sockaddr_in srv_addr = {0};
     srv_addr.sin_family = AF_INET;
-    srv_addr.sin_addr.s_addr = inet_addr(server_addr);
     srv_addr.sin_port = htons(port);
+
+    int ok = inet_pton(AF_INET, server_addr, &srv_addr.sin_addr.s_addr);
+
+    if (ok == 0) {
+        LOG_ERROR("Invalid -ipaddr format");
+        return -1;
+    }
+
+    if (ok == -1) {
+        LOG_CUSTOM_ERRNO("inet_pton");
+        return -1;
+    }
 
     if (connect(fd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) == -1) {
         LOG_CUSTOM_ERRNO("connect");
