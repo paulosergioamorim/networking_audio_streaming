@@ -12,7 +12,7 @@ typedef enum {
     KIND_STOP,
     KIND_RESUME,
     KIND_STREAM,
-    // this commands is client only
+    // these commands are client only
     KIND_HELP,
     KIND_EXIT,
     KIND_STATS,
