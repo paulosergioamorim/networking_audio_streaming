@@ -102,10 +102,10 @@ int main(int argc, char **argv) {
 
     logger_initConsoleLogger(stdout);
 
-    int *help = (int *)flag_bool("help", false, "Print this help");
+    bool *help = flag_bool("help", false, "Print this help");
     char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the server IP Address");
     int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
-    int *debug = (int *)flag_bool("debug", false, "Print debug levels");
+    bool *debug = flag_bool("debug", false, "Print debug levels");
 
     if (!flag_parse(argc, argv) || !**ipaddr) {
         audio_client_display_usage(stderr);

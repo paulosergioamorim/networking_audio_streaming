@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
     bool *help = flag_bool("help", false, "Print this help");
     char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the serving IP Address");
     uint64_t *port = flag_uint64("port", 8000, "Provide the serving PORT");
-    int *debug = (int *)flag_bool("debug", false, "Print debug levels");
+    bool *debug = flag_bool("debug", false, "Print debug levels");
 
     if (!flag_parse(argc, argv) || !**ipaddr) {
         audio_server_display_usage(stderr);
