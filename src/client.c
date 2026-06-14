@@ -35,7 +35,6 @@
      "|=======================================|\n")
 #define LIST_LINE_HORIZONTAL ("|----------------------------------------------------------------------------------|\n")
 
-// Registrar só pacotes de streaming?
 typedef struct {
     unsigned long min_us;
     unsigned long max_us;
@@ -107,7 +106,7 @@ int main(int argc, char **argv) {
     int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
     bool *debug = flag_bool("debug", false, "Print debug levels");
 
-    if (!flag_parse(argc, argv) || !**ipaddr) {
+    if (!flag_parse(argc, argv)) {
         audio_client_display_usage(stderr);
         return 1;
     }
@@ -295,7 +294,6 @@ int main(int argc, char **argv) {
                         unsigned long latency = (1000000 * now.tv_sec + now.tv_usec) -
                                                 (1000000 * res.header.tv.tv_sec + res.header.tv.tv_usec);
                         audio_client_stats_update(&c.stats, latency);
-
                         queue_enqueue(&c.queue, (unsigned char *)res.buf, bytes_readed);
                         continue;
                     }
@@ -504,7 +502,6 @@ void audio_client_handle_start(Audio_Client *c) {
     libvlc_media_player_play(c->vlc_mp);
 }
 
-// Metrics
 void audio_client_stats_reset(Delay_Stats *s) {
     s->min_us = ULONG_MAX;
     s->max_us = 0;
