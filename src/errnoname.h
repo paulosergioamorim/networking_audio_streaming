@@ -2822,7 +2822,9 @@ char const * errnoname(int errno_)
         case ETcpUnattach: return "ETcpUnattach";
     #endif
     #ifdef EUCLEAN
+        #if !defined(EFSCORRUPTED) || EUCLEAN != EFSCORRUPTED
         case EUCLEAN: return "EUCLEAN";
+        #endif
     #endif
     #ifdef EUNATCH
         case EUNATCH: return "EUNATCH";
