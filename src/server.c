@@ -1,4 +1,4 @@
-#include "logger.h"
+#include "custom_logger.h"
 #include "packets.h"
 #include "signals.h"
 #include "suffix.h"
@@ -22,6 +22,9 @@
 
 #define FLAG_IMPLEMENTATION
 #include "flag.h"
+
+#define NOB_IMPLEMENTATION
+#include "nob.h"
 
 #define AUDIODIR "./audios"
 #define BACKLOG 5
@@ -100,13 +103,11 @@ void audio_server_display_usage(FILE *fp) {
 int main(int argc, char **argv) {
     Audio_Server s;
 
-    logger_initConsoleLogger(stdout);
-    logger_setLevel(LogLevel_INFO);
+    set_log_handler(&custom_logger);
 
     bool *help = flag_bool("help", false, "Print this help");
     char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the serving IP Address");
     uint64_t *port = flag_uint64("port", 8000, "Provide the serving PORT");
-    bool *debug = flag_bool("debug", false, "Print debug levels");
 
     if (!flag_parse(argc, argv)) {
         audio_server_display_usage(stderr);
@@ -118,16 +119,12 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (*debug) {
-        logger_setLevel(LogLevel_DEBUG);
-    }
-
     if (!audio_server_init(&s, *ipaddr, *port)) {
         audio_server_destroy(&s);
         return 1;
     }
 
-    LOG_INFO("Server listening on %s:%d", *ipaddr, *port);
+    nob_log(INFO, "Server listening on %s:%ld", *ipaddr, *port);
 
     int N = 0;
     const int MAX_EVENTS = 10;
@@ -141,7 +138,7 @@ int main(int argc, char **argv) {
         }
 
         if (N == -1) {
-            LOG_CUSTOM_ERRNO("epoll_wait");
+            nob_log(ERROR, "epoll_wait");
             audio_server_destroy(&s);
             return 1;
         }
@@ -160,7 +157,7 @@ int main(int argc, char **argv) {
                 ssize_t bytes_readed = read(s.timerfd, &expdir, sizeof(expdir));
 
                 if (bytes_readed == -1) {
-                    LOG_CUSTOM_ERRNO("read");
+                    nob_log(ERROR, "read");
                 }
 
                 for (size_t i = 0; i < hmlen(s.active_clients); i++) {
@@ -187,7 +184,7 @@ int main(int argc, char **argv) {
                 ssize_t bytes_readed = recv(eventfd, &req, sizeof(req), MSG_NOSIGNAL);
 
                 if (bytes_readed == -1) {
-                    LOG_CUSTOM_ERRNO("recv");
+                    nob_log(ERROR, "recv");
                     break;
                 }
 
@@ -205,14 +202,14 @@ int main(int argc, char **argv) {
                     audio_server_handle_resume(&s, eventfd, &req, &res);
                     break;
                 default:
-                    LOG_ERROR("Invalid request");
+                    nob_log(ERROR, "Invalid request");
                     break;
                 }
             }
         }
     }
 
-    LOG_INFO("Closing server");
+    nob_log(INFO, "Closing server");
     audio_server_destroy(&s);
     return 0;
 }
@@ -228,7 +225,7 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     size_t nbytes = min(sizeof(res.buf), audio->file_size - c->offset);
 
     if (nbytes == 0) {
-        LOG_INFO("Client %d end streaming", sockfd);
+        nob_log(INFO, "Client %d end streaming", sockfd);
         audio_server_client_unset_streaming(s, sockfd);
         c->audio_idx = -1;
         c->offset = 0;
@@ -241,19 +238,18 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     ssize_t bytes_written = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
 
     if (bytes_written == -1) {
-        LOG_CUSTOM_ERRNO("send");
+        nob_log(ERROR, "send");
         return;
     }
 
     bytes_written = send(sockfd, res.buf, nbytes, MSG_NOSIGNAL | MSG_DONTWAIT);
 
     if (bytes_written == -1) {
-        LOG_CUSTOM_ERRNO("send");
+        nob_log(ERROR, "send");
         return;
     }
 
     c->offset += bytes_written;
-    LOG_DEBUG("Enviados %ld bytes de stream para o cliente %d", bytes_written, sockfd);
 }
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
@@ -264,13 +260,13 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (fd == -1) {
-        LOG_CUSTOM_ERRNO("socket");
+        nob_log(ERROR, "socket");
         return -1;
     }
 
     int opt = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
-        LOG_CUSTOM_ERRNO("setsockopt");
+        nob_log(ERROR, "setsockopt");
         return -1;
     }
 
@@ -281,12 +277,12 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     int ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
 
     if (ok == 0) {
-        LOG_ERROR("Invalid -ipaddr format");
+        nob_log(ERROR, "Invalid -ipaddr format");
         return -1;
     }
 
     if (ok == -1) {
-        LOG_CUSTOM_ERRNO("inet_pton");
+        nob_log(ERROR, "inet_pton");
         return -1;
     }
 
@@ -294,7 +290,7 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
 
     if (ret_val != 0) {
-        LOG_CUSTOM_ERRNO("bind");
+        nob_log(ERROR, "bind");
         return -1;
     }
 
@@ -302,7 +298,7 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     ret_val = listen(fd, BACKLOG);
 
     if (ret_val != 0) {
-        LOG_CUSTOM_ERRNO("listen");
+        nob_log(ERROR, "listen");
         return -1;
     }
 
@@ -313,6 +309,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     *s = (Audio_Server){0};
 
     if (signals_sigint_sigaction() == -1) {
+        nob_log(ERROR, "sigaction");
         return 0;
     }
 
@@ -326,7 +323,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     s->epollfd = epoll_create1(0);
 
     if (s->epollfd == -1) {
-        LOG_CUSTOM_ERRNO("epoll_create1");
+        nob_log(ERROR, "epoll_create1");
         return 0;
     }
 
@@ -334,7 +331,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     ev.data.fd = s->sockfd;
 
     if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->sockfd, &ev) == -1) {
-        LOG_CUSTOM_ERRNO("epoll_ctl");
+        nob_log(ERROR, "epoll_ctl");
         return 0;
     }
 
@@ -343,13 +340,13 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     s->timerfd = timerfd_create(CLOCK_REALTIME, 0);
 
     if (s->timerfd == -1) {
-        LOG_CUSTOM_ERRNO("timerfd_create");
+        nob_log(ERROR, "timerfd_create");
         return 0;
     }
 
     struct timespec now;
     if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
-        LOG_CUSTOM_ERRNO("clock_gettime");
+        nob_log(ERROR, "clock_gettime");
         return 0;
     }
 
@@ -359,7 +356,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     tspec.it_value.tv_nsec = now.tv_nsec;
 
     if (timerfd_settime(s->timerfd, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("timerfd_settime");
+        nob_log(ERROR, "timerfd_settime");
         return 0;
     }
 
@@ -395,7 +392,7 @@ void audio_server_load_audios(Audio_Server *s) {
     DIR *dir = opendir(AUDIODIR);
 
     if (!dir) {
-        LOG_CUSTOM_ERRNO("Error to load " AUDIODIR " directory");
+        nob_log(ERROR, "Error to load " AUDIODIR " directory");
         return;
     }
 
@@ -418,14 +415,14 @@ void audio_server_load_audios(Audio_Server *s) {
         int fd = open(path, O_RDONLY);
 
         if (fd == -1) {
-            LOG_CUSTOM_ERRNO("open");
+            nob_log(ERROR, "open");
             continue;
         }
 
         struct stat st = {0};
 
         if (fstat(fd, &st) == -1) {
-            LOG_CUSTOM_ERRNO("fstat");
+            nob_log(ERROR, "fstat");
             close(fd);
             continue;
         }
@@ -433,7 +430,7 @@ void audio_server_load_audios(Audio_Server *s) {
         void *buf = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
 
         if (buf == MAP_FAILED) {
-            LOG_CUSTOM_ERRNO("mmap");
+            nob_log(ERROR, "mmap");
             close(fd);
             continue;
         }
@@ -446,11 +443,11 @@ void audio_server_load_audios(Audio_Server *s) {
     }
 
     if (closedir(dir) == -1) {
-        LOG_CUSTOM_ERRNO("Error to close " AUDIODIR " directory");
+        nob_log(ERROR, "Error to close " AUDIODIR " directory");
         return;
     }
 
-    LOG_INFO("Loaded audios");
+    nob_log(INFO, "Loaded audios");
 }
 
 void audio_server_handle_accept(Audio_Server *s) {
@@ -458,7 +455,7 @@ void audio_server_handle_accept(Audio_Server *s) {
     int fd = accept(s->sockfd, NULL, NULL);
 
     if (fd == -1) {
-        LOG_CUSTOM_ERRNO("accept");
+        nob_log(ERROR, "accept");
         return;
     }
 
@@ -468,20 +465,20 @@ void audio_server_handle_accept(Audio_Server *s) {
     ev.data.fd = fd;
 
     if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
-        LOG_CUSTOM_ERRNO("epoll_ctl");
+        nob_log(ERROR, "epoll_ctl");
         close(fd);
         return;
     }
 
     hmput(s->clients, fd, c);
-    LOG_INFO("Client connected");
+    nob_log(INFO, "Client connected");
 }
 
 void audio_server_handle_exit(Audio_Server *s, int event_sock) {
     ptrdiff_t idx = hmgeti(s->clients, event_sock);
 
     if (idx == -1) {
-        LOG_WARN("Invalid client index");
+        nob_log(WARNING, "Invalid client index");
         return;
     }
 
@@ -491,15 +488,15 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock) {
     hmdel(s->clients, event_sock);
 #pragma GCC diagnostic pop
     if (epoll_ctl(s->epollfd, EPOLL_CTL_DEL, event_sock, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("epoll_ctl");
+        nob_log(ERROR, "epoll_ctl");
     }
     close(event_sock);
 
-    LOG_INFO("Client disconnected");
+    nob_log(INFO, "Client disconnected");
 }
 
 void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Response *res) {
-    LOG_INFO("Client request /list");
+    nob_log(INFO, "Client request /list");
     res->header.kind = KIND_LIST;
     res->header.code = STATUS_LIST_CONTINUE;
 
@@ -509,13 +506,13 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
         ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
 
         if (bytes_written == -1) {
-            LOG_CUSTOM_ERRNO("send");
+            nob_log(ERROR, "send");
         }
 
         bytes_written = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
 
         if (bytes_written == -1) {
-            LOG_CUSTOM_ERRNO("send");
+            nob_log(ERROR, "send");
         }
     }
 
@@ -523,12 +520,12 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
 
     if (bytes_written == -1) {
-        LOG_CUSTOM_ERRNO("send");
+        nob_log(ERROR, "send");
     }
 }
 
 void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Response *res) {
-    LOG_INFO("Client request /start");
+    nob_log(INFO, "Client request /start");
     res->header.kind = KIND_START;
     size_t idx = req->buf - 1;
 
@@ -536,7 +533,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
         res->header.code = STATUS_ERR_NO_FILE;
         ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
         if (bytes_written == -1) {
-            LOG_CUSTOM_ERRNO("send");
+            nob_log(ERROR, "send");
         }
         return;
     }
@@ -546,29 +543,29 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
-        LOG_CUSTOM_ERRNO("send");
+        nob_log(ERROR, "send");
     }
 }
 
 void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Response *res) {
-    LOG_INFO("Client request /stop");
+    nob_log(INFO, "Client request /stop");
     audio_server_client_unset_streaming(s, event_sock);
     res->header.kind = KIND_STOP;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
-        LOG_CUSTOM_ERRNO("send");
+        nob_log(ERROR, "send");
     }
 }
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res) {
-    LOG_INFO("Client request /resume");
+    nob_log(INFO, "Client request /resume");
     audio_server_client_set_streaming(s, event_sock, -1);
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
     if (bytes_written == -1) {
-        LOG_CUSTOM_ERRNO("send");
+        nob_log(ERROR, "send");
     }
 }
 
@@ -584,7 +581,7 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) 
             ev.data.fd = s->timerfd;
 
             if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->timerfd, &ev) == -1) {
-                LOG_CUSTOM_ERRNO("epoll_ctl");
+                nob_log(ERROR, "epoll_ctl");
             }
         }
     }
@@ -592,7 +589,7 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) 
     idx = hmgeti(s->clients, key);
 
     if (idx == -1) {
-        LOG_WARN("Invalid client index");
+        nob_log(WARNING, "Invalid client index");
         return;
     }
 
@@ -616,14 +613,14 @@ void audio_server_client_unset_streaming(Audio_Server *s, int key) {
 #pragma GCC diagnostic pop
 
         if (hmlen(s->active_clients) == 0 && epoll_ctl(s->epollfd, EPOLL_CTL_DEL, s->timerfd, NULL) == -1) {
-            LOG_CUSTOM_ERRNO("epoll_ctl");
+            nob_log(ERROR, "epoll_ctl");
         }
     }
 
     idx = hmgeti(s->clients, key);
 
     if (idx == -1) {
-        LOG_WARN("Invalid client index");
+        nob_log(WARNING, "Invalid client index");
         return;
     }
 
@@ -633,9 +630,9 @@ void audio_server_client_unset_streaming(Audio_Server *s, int key) {
 
 void audio2_destroy(Audio2 *a) {
     if (munmap(a->buf, a->file_size) == -1) {
-        LOG_CUSTOM_ERRNO("munmap");
+        nob_log(ERROR, "munmap");
     }
     if (close(a->fd) == -1) {
-        LOG_CUSTOM_ERRNO("close");
+        nob_log(ERROR, "close");
     }
 }

@@ -1,4 +1,3 @@
-#include "logger.h"
 #include "packets.h"
 #include "queue.h"
 #include "signals.h"
@@ -20,6 +19,9 @@
 
 #define FLAG_IMPLEMENTATION
 #include "flag.h"
+
+#define NOB_IMPLEMENTATION
+#include "nob.h"
 
 #define KB(x) ((1 << 10) * x)
 #define HELP_MSG                                                                                                       \
@@ -99,12 +101,9 @@ void audio_client_display_usage(FILE *fp) {
 int main(int argc, char **argv) {
     Audio_Client c;
 
-    logger_initConsoleLogger(stdout);
-
     bool *help = flag_bool("help", false, "Print this help");
     char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the server IP Address");
     int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
-    bool *debug = flag_bool("debug", false, "Print debug levels");
 
     if (!flag_parse(argc, argv)) {
         audio_client_display_usage(stderr);
@@ -114,10 +113,6 @@ int main(int argc, char **argv) {
     if (*help) {
         audio_client_display_usage(stdout);
         return 0;
-    }
-
-    if (*debug) {
-        logger_setLevel(LogLevel_DEBUG);
     }
 
     if (!audio_client_init(&c, *ipaddr, *port)) {
@@ -140,7 +135,7 @@ int main(int argc, char **argv) {
         }
 
         if (N == -1) {
-            LOG_CUSTOM_ERRNO("epoll_wait");
+            nob_log(ERROR, "epoll_wait");
             audio_client_destroy(&c);
             return 1;
         }
@@ -208,14 +203,14 @@ int main(int argc, char **argv) {
 
                 ssize_t bytes_written = send(c.sockfd, &req, sizeof(req), MSG_NOSIGNAL);
                 if (bytes_written == -1) {
-                    LOG_CUSTOM_ERRNO("send");
+                    nob_log(ERROR, "send");
                     continue;
                 }
             }
 
             if (event_sock == c.sockfd) {
                 if (event_mask & EPOLLRDHUP) {
-                    LOG_INFO("Server has been closed. Exiting...");
+                    nob_log(INFO, "Server has been closed. Exiting...");
                     signaled = 1;
                     break;
                 }
@@ -226,7 +221,7 @@ int main(int argc, char **argv) {
                     Message_Kind kind = res.header.kind;
 
                     if (bytes_readed == -1) {
-                        LOG_CUSTOM_ERRNO("recv");
+                        nob_log(ERROR, "recv");
                         break;
                     }
 
@@ -239,7 +234,7 @@ int main(int argc, char **argv) {
                         bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
 
                         if (bytes_readed == -1) {
-                            LOG_CUSTOM_ERRNO("recv");
+                            nob_log(ERROR, "recv");
                             continue;
                         }
 
@@ -280,12 +275,12 @@ int main(int argc, char **argv) {
                         bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
 
                         if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                            LOG_WARN("Would block");
+                            nob_log(WARNING, "Would block");
                             break;
                         }
 
                         if (bytes_readed == -1) {
-                            LOG_CUSTOM_ERRNO("recv");
+                            nob_log(ERROR, "recv");
                             break;
                         }
 
@@ -298,7 +293,7 @@ int main(int argc, char **argv) {
                         continue;
                     }
 
-                    LOG_DEBUG("Invalid response");
+                    nob_log(WARNING, "Invalid response");
                 }
             }
         }
@@ -316,7 +311,7 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     sigaddset(&mask, SIGINT);
 
     if (pthread_sigmask(SIG_BLOCK, &mask, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("pthread_sigmask");
+        nob_log(ERROR, "pthread_sigmask");
         return 0;
     }
 
@@ -329,7 +324,7 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     c->epollfd = epoll_create1(0);
 
     if (c->epollfd == -1) {
-        LOG_CUSTOM_ERRNO("epoll_create1");
+        nob_log(ERROR, "epoll_create1");
         return 0;
     }
 
@@ -338,7 +333,7 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     ev.data.fd = STDIN_FILENO;
 
     if (epoll_ctl(c->epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev) == -1) {
-        LOG_CUSTOM_ERRNO("epoll_ctl");
+        nob_log(ERROR, "epoll_ctl");
         return 0;
     }
 
@@ -346,7 +341,7 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     ev.data.fd = c->sockfd;
 
     if (epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sockfd, &ev) == -1) {
-        LOG_CUSTOM_ERRNO("epoll_ctl");
+        nob_log(ERROR, "epoll_ctl");
         return 0;
     }
 
@@ -356,32 +351,33 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     c->vlc_instance = libvlc_new(1, args);
 
     if (c->vlc_instance == NULL) {
-        LOG_CUSTOM_ERRNO("libvlc_new");
+        nob_log(ERROR, "libvlc_new");
         return 0;
     }
 
     libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
 
     if (!vlc_media) {
-        LOG_CUSTOM_ERRNO("libvlc_media_new_callbacks");
+        nob_log(ERROR, "libvlc_media_new_callbacks");
         return 0;
     }
 
     c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
 
     if (!c->vlc_mp) {
-        LOG_CUSTOM_ERRNO("libvlc_media_player_new_from_media");
+        nob_log(ERROR, "libvlc_media_player_new_from_media");
         return 0;
     }
 
     libvlc_media_release(vlc_media);
 
     if (signals_sigint_sigaction() == -1) {
+        nob_log(ERROR, "sigaction");
         return 0;
     }
 
     if (pthread_sigmask(SIG_UNBLOCK, &mask, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("pthread_sigmask");
+        nob_log(ERROR, "pthread_sigmask");
         return 0;
     }
 
@@ -392,7 +388,7 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (fd == -1) {
-        LOG_CUSTOM_ERRNO("socket");
+        nob_log(ERROR, "socket");
         return -1;
     }
 
@@ -403,17 +399,17 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
     int ok = inet_pton(AF_INET, server_addr, &srv_addr.sin_addr.s_addr);
 
     if (ok == 0) {
-        LOG_ERROR("Invalid -ipaddr format");
+        nob_log(ERROR, "Invalid -ipaddr format");
         return -1;
     }
 
     if (ok == -1) {
-        LOG_CUSTOM_ERRNO("inet_pton");
+        nob_log(ERROR, "inet_pton");
         return -1;
     }
 
     if (connect(fd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) == -1) {
-        LOG_CUSTOM_ERRNO("connect");
+        nob_log(ERROR, "connect");
         return -1;
     }
 

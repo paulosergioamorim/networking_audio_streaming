@@ -1,5 +1,5 @@
 #include "signals.h"
-#include "logger.h"
+#include <stddef.h>
 #include <signal.h>
 
 volatile sig_atomic_t signaled;
@@ -14,7 +14,6 @@ int signals_sigint_sigaction() {
     sa.sa_handler = &SIGINT_HANDLER;
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
-        LOG_ERROR("sigaction");
         return -1;
     }
 
