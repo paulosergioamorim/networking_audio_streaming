@@ -139,7 +139,8 @@ int main(int argc, char **argv) {
 
         if (N == -1) {
             nob_log(ERROR, "epoll_wait");
-            break;
+            audio_server_destroy(&s);
+            return 1;
         }
 
         for (int i = 0; i < N; i++) {
