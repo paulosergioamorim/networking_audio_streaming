@@ -26,9 +26,10 @@
 #define AUDIODIR "./audios"
 #define BACKLOG 5
 
+#define min(a, b) (((a) < (b)) ? a : b)
+
 typedef struct {
     size_t offset;
-    int playing;
     ptrdiff_t audio_idx;
     int sockfd;
 } Client_State;
@@ -39,11 +40,11 @@ typedef struct {
 } Clients_State;
 
 typedef struct {
-} Empty;
+} EmptyStruct;
 
 typedef struct {
     int key;
-    Empty value;
+    EmptyStruct value;
 } Active_Clients;
 
 typedef struct {
@@ -66,6 +67,8 @@ typedef struct {
 void audio_server_transmit_packet(Audio_Server *s, Client_State *c);
 
 int audio_server_create_tcp_socket(const char *addr, int port);
+
+int audio_server_create_timer();
 
 int audio_server_init(Audio_Server *s, const char *addr, int tcp_port);
 
@@ -149,22 +152,12 @@ int main(int argc, char **argv) {
 
             if (eventfd == s.sockfd && event_mask & EPOLLIN) {
                 audio_server_handle_accept(&s);
-                continue;
-            }
-
-            if (eventfd == s.timerfd && event_mask & EPOLLIN) {
+            } else if (eventfd == s.timerfd && event_mask & EPOLLIN) {
                 audio_server_handle_timer(&s, eventfd);
-                continue;
-            }
-
-            if (event_mask & EPOLLRDHUP) {
+            } else if (event_mask & EPOLLRDHUP) {
                 audio_server_handle_exit(&s, eventfd);
-                continue;
-            }
-
-            if (event_mask & EPOLLIN) {
+            } else if (event_mask & EPOLLIN) {
                 audio_server_handle_request(&s, eventfd);
-                continue;
             }
         }
     }
@@ -173,8 +166,6 @@ int main(int argc, char **argv) {
     audio_server_destroy(&s);
     return 0;
 }
-
-#define min(a, b) (((a) < (b)) ? a : b)
 
 void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     Response res = {0};
@@ -219,7 +210,7 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
 
     if (fd == -1) {
         nob_log(ERROR, "socket");
-        goto err;
+        goto err_socket;
     }
 
     /* Set socket to nonblocking */
@@ -269,9 +260,8 @@ int audio_server_create_tcp_socket(const char *addr, int port) {
     return fd;
 
 err:
-    if (fd > 0) {
-        close(fd);
-    }
+    close(fd);
+err_socket:
     return 0;
 }
 
@@ -280,13 +270,19 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (signals_sigint_sigaction() == -1) {
         nob_log(ERROR, "sigaction");
-        goto err;
+        goto err_sigaction;
     }
 
     s->sockfd = audio_server_create_tcp_socket(addr, tcp_port);
 
     if (s->sockfd == 0) {
-        goto err;
+        goto err_create_socket;
+    }
+
+    s->timerfd = audio_server_create_timer();
+
+    if (s->timerfd == 0) {
+        goto err_create_timer;
     }
 
     struct epoll_event ev;
@@ -294,7 +290,7 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (s->epollfd == -1) {
         nob_log(ERROR, "epoll_create1");
-        goto err;
+        goto err_epoll_create;
     }
 
     ev.events = EPOLLIN | EPOLLET;
@@ -302,47 +298,20 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->sockfd, &ev) == -1) {
         nob_log(ERROR, "epoll_ctl");
-        goto err;
-    }
-
-    // timer for send streaming packets
-    struct itimerspec tspec = {0};
-    s->timerfd = timerfd_create(CLOCK_REALTIME, 0);
-
-    if (s->timerfd == -1) {
-        nob_log(ERROR, "timerfd_create");
-        goto err;
-    }
-
-    struct timespec now;
-    if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
-        nob_log(ERROR, "clock_gettime");
-        goto err;
-    }
-
-    tspec.it_interval.tv_sec = 0;
-    tspec.it_interval.tv_nsec = 100000000;
-    tspec.it_value.tv_sec = now.tv_sec;
-    tspec.it_value.tv_nsec = now.tv_nsec;
-
-    if (timerfd_settime(s->timerfd, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
-        nob_log(ERROR, "timerfd_settime");
-        goto err;
+        goto err_epoll_ctl;
     }
 
     audio_server_load_audios(s);
     return 1;
 
-err:
-    if (s->sockfd > 0) {
-        close(s->sockfd);
-    }
-    if (s->epollfd > 0) {
-        close(s->sockfd);
-    }
-    if (s->timerfd > 0) {
-        close(s->sockfd);
-    }
+err_epoll_ctl:
+    close(s->epollfd);
+err_epoll_create:
+    close(s->timerfd);
+err_create_timer:
+    close(s->sockfd);
+err_create_socket:
+err_sigaction:
     return 0;
 }
 
@@ -572,11 +541,11 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) 
     ptrdiff_t idx = hmgeti(s->active_clients, key);
 
     if (idx == -1) {
-        hmput(s->active_clients, key, (Empty){});
+        hmput(s->active_clients, key, (EmptyStruct){});
 
         if (hmlen(s->active_clients) == 1) {
             struct epoll_event ev = {0};
-            ev.events = EPOLLIN;
+            ev.events = EPOLLIN | EPOLLET;
             ev.data.fd = s->timerfd;
 
             if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->timerfd, &ev) == -1) {
@@ -598,8 +567,6 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) 
         c->audio_idx = audio_idx;
         c->offset = 0;
     }
-
-    c->playing = 1;
 }
 
 void audio_server_client_unset_streaming(Audio_Server *s, int key) {
@@ -615,16 +582,6 @@ void audio_server_client_unset_streaming(Audio_Server *s, int key) {
             nob_log(ERROR, "epoll_ctl");
         }
     }
-
-    idx = hmgeti(s->clients, key);
-
-    if (idx == -1) {
-        nob_log(WARNING, "Invalid client index");
-        return;
-    }
-
-    Client_State *c = &s->clients[idx].value;
-    c->playing = 0;
 }
 
 void audio2_destroy(Audio2 *a) {
@@ -677,24 +634,74 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
 }
 
 void audio_server_handle_timer(Audio_Server *s, int timerfd) {
-    uint64_t expdir;
-    ssize_t bytes_readed = read(s->timerfd, &expdir, sizeof(expdir));
+    while (true) {
+        uint64_t expdir;
+        ssize_t bytes_readed = read(s->timerfd, &expdir, sizeof(expdir));
 
-    if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return;
-    }
-
-    if (bytes_readed == -1) {
-        nob_log(ERROR, "read");
-    }
-
-    for (size_t i = 0; i < hmlen(s->active_clients); i++) {
-        int key = s->active_clients[i].key;
-        ptrdiff_t idx = hmgeti(s->clients, key);
-        if (idx == -1) {
-            continue;
+        if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
         }
-        Client_State *c = &s->clients[idx].value;
-        audio_server_transmit_packet(s, c);
+
+        if (bytes_readed == -1) {
+            nob_log(ERROR, "read");
+        }
+
+        for (size_t i = 0; i < hmlen(s->active_clients); i++) {
+            int key = s->active_clients[i].key;
+            ptrdiff_t idx = hmgeti(s->clients, key);
+            if (idx == -1) {
+                continue;
+            }
+            Client_State *c = &s->clients[idx].value;
+            audio_server_transmit_packet(s, c);
+        }
     }
+}
+
+int audio_server_create_timer() {
+    // timer for send streaming packets
+    struct itimerspec tspec = {0};
+    int fd = timerfd_create(CLOCK_REALTIME, 0);
+
+    /* Set socket to nonblocking */
+    int flags = fcntl(fd, F_GETFL);
+
+    if (flags == -1) {
+        nob_log(ERROR, "fcntl F_GETFL");
+        goto err;
+    }
+
+    flags |= O_NONBLOCK;
+
+    if (fcntl(fd, F_SETFL, flags) == -1) {
+        nob_log(ERROR, "fcntl F_SETFL");
+        goto err;
+    }
+
+    if (fd == -1) {
+        nob_log(ERROR, "timerfd_create");
+        goto err;
+    }
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+        nob_log(ERROR, "clock_gettime");
+        goto err;
+    }
+
+    tspec.it_interval.tv_sec = 0;
+    tspec.it_interval.tv_nsec = 100000000;
+    tspec.it_value.tv_sec = now.tv_sec;
+    tspec.it_value.tv_nsec = now.tv_nsec;
+
+    if (timerfd_settime(fd, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
+        nob_log(ERROR, "timerfd_settime");
+        goto err;
+    }
+
+    return fd;
+
+err:
+    close(fd);
+    return 0;
 }
