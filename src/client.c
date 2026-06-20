@@ -6,7 +6,6 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <limits.h>
-#include <linux/limits.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>

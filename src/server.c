@@ -3,20 +3,14 @@
 #include "signals.h"
 #include "suffix.h"
 #include <arpa/inet.h>
-#include <asm-generic/errno-base.h>
-#include <asm-generic/errno.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/limits.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
