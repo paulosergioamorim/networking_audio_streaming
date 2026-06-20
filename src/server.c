@@ -3,7 +3,10 @@
 #include "signals.h"
 #include "suffix.h"
 #include <arpa/inet.h>
+#include <asm-generic/errno-base.h>
+#include <asm-generic/errno.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/limits.h>
 #include <stddef.h>
@@ -92,6 +95,10 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int file_idx);
 
 void audio_server_client_unset_streaming(Audio_Server *s, int key);
 
+void audio_server_handle_request(Audio_Server *s, int event_sock);
+
+void audio_server_handle_timer(Audio_Server *s, int timerfd);
+
 void audio2_destroy(Audio2 *a);
 
 void audio_server_display_usage(FILE *fp) {
@@ -120,7 +127,6 @@ int main(int argc, char **argv) {
     }
 
     if (!audio_server_init(&s, *ipaddr, *port)) {
-        audio_server_destroy(&s);
         return 1;
     }
 
@@ -139,37 +145,20 @@ int main(int argc, char **argv) {
 
         if (N == -1) {
             nob_log(ERROR, "epoll_wait");
-            audio_server_destroy(&s);
-            return 1;
+            break;
         }
 
         for (int i = 0; i < N; i++) {
             uint32_t event_mask = events[i].events;
             int eventfd = events[i].data.fd;
 
-            if (eventfd == s.sockfd) {
+            if (eventfd == s.sockfd && event_mask & EPOLLIN) {
                 audio_server_handle_accept(&s);
                 continue;
             }
 
-            if (eventfd == s.timerfd) {
-                uint64_t expdir;
-                ssize_t bytes_readed = read(s.timerfd, &expdir, sizeof(expdir));
-
-                if (bytes_readed == -1) {
-                    nob_log(ERROR, "read");
-                }
-
-                for (size_t i = 0; i < hmlen(s.active_clients); i++) {
-                    int key = s.active_clients[i].key;
-                    ptrdiff_t idx = hmgeti(s.clients, key);
-                    if (idx == -1) {
-                        continue;
-                    }
-                    Client_State *c = &s.clients[idx].value;
-                    audio_server_transmit_packet(&s, c);
-                }
-
+            if (eventfd == s.timerfd && event_mask & EPOLLIN) {
+                audio_server_handle_timer(&s, eventfd);
                 continue;
             }
 
@@ -179,32 +168,8 @@ int main(int argc, char **argv) {
             }
 
             if (event_mask & EPOLLIN) {
-                Request req = {0};
-                Response res = {0};
-                ssize_t bytes_readed = recv(eventfd, &req, sizeof(req), MSG_NOSIGNAL);
-
-                if (bytes_readed == -1) {
-                    nob_log(ERROR, "recv");
-                    break;
-                }
-
-                switch (req.header.kind) {
-                case KIND_LIST:
-                    audio_server_handle_list(&s, eventfd, &req, &res);
-                    break;
-                case KIND_START:
-                    audio_server_handle_start(&s, eventfd, &req, &res);
-                    break;
-                case KIND_STOP:
-                    audio_server_handle_stop(&s, eventfd, &req, &res);
-                    break;
-                case KIND_RESUME:
-                    audio_server_handle_resume(&s, eventfd, &req, &res);
-                    break;
-                default:
-                    nob_log(ERROR, "Invalid request");
-                    break;
-                }
+                audio_server_handle_request(&s, eventfd);
+                continue;
             }
         }
     }
@@ -235,14 +200,14 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     memcpy(res.buf, audio->buf + c->offset, nbytes);
     res.header.code = STATUS_OK;
     res.header.len = nbytes;
-    ssize_t bytes_written = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE | MSG_DONTWAIT);
+    ssize_t bytes_written = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE);
 
     if (bytes_written == -1) {
         nob_log(ERROR, "send");
         return;
     }
 
-    bytes_written = send(sockfd, res.buf, nbytes, MSG_NOSIGNAL | MSG_DONTWAIT);
+    bytes_written = send(sockfd, res.buf, nbytes, MSG_NOSIGNAL);
 
     if (bytes_written == -1) {
         nob_log(ERROR, "send");
@@ -253,56 +218,66 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
 }
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
-    struct sockaddr_in sockaddr;
-    int fd, ret_val;
-
+    struct sockaddr_in sockaddr = {0};
     /* Step1: create a TCP socket */
-    fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (fd == -1) {
         nob_log(ERROR, "socket");
-        return -1;
+        goto err;
+    }
+
+    /* Set socket to nonblocking */
+    int flags = fcntl(fd, F_GETFL);
+
+    if (flags == -1) {
+        nob_log(ERROR, "fcntl F_GETFL");
+        goto err;
+    }
+
+    flags |= O_NONBLOCK;
+
+    if (fcntl(fd, F_SETFL, flags) == -1) {
+        nob_log(ERROR, "fcntl F_SETFL");
+        goto err;
     }
 
     int opt = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
         nob_log(ERROR, "setsockopt");
-        return -1;
+        goto err;
     }
 
     /* Initialize the socket address structure */
     sockaddr.sin_family = AF_INET;
     sockaddr.sin_port = htons(port);
-
+    /* Convert string address to numeric address */
     int ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
 
-    if (ok == 0) {
-        nob_log(ERROR, "Invalid -ipaddr format");
-        return -1;
-    }
-
-    if (ok == -1) {
-        nob_log(ERROR, "inet_pton");
-        return -1;
+    if (ok <= 0) {
+        nob_log(ERROR, ok == 0 ? "Invalid -ipaddr format" : "inet_pton");
+        goto err;
     }
 
     /* Step2: bind the socket to port <port> on the local host */
-    ret_val = bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
-
-    if (ret_val != 0) {
+    if (bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr)) != 0) {
         nob_log(ERROR, "bind");
-        return -1;
+        goto err;
     }
 
     /* Step3: listen for incoming connections */
-    ret_val = listen(fd, BACKLOG);
-
-    if (ret_val != 0) {
+    if (listen(fd, BACKLOG) != 0) {
         nob_log(ERROR, "listen");
-        return -1;
+        goto err;
     }
 
     return fd;
+
+err:
+    if (fd > 0) {
+        close(fd);
+    }
+    return 0;
 }
 
 int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
@@ -310,13 +285,13 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (signals_sigint_sigaction() == -1) {
         nob_log(ERROR, "sigaction");
-        return 0;
+        goto err;
     }
 
     s->sockfd = audio_server_create_tcp_socket(addr, tcp_port);
 
-    if (s->sockfd == -1) {
-        return 0;
+    if (s->sockfd == 0) {
+        goto err;
     }
 
     struct epoll_event ev;
@@ -324,15 +299,15 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (s->epollfd == -1) {
         nob_log(ERROR, "epoll_create1");
-        return 0;
+        goto err;
     }
 
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = s->sockfd;
 
     if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, s->sockfd, &ev) == -1) {
         nob_log(ERROR, "epoll_ctl");
-        return 0;
+        goto err;
     }
 
     // timer for send streaming packets
@@ -341,13 +316,13 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (s->timerfd == -1) {
         nob_log(ERROR, "timerfd_create");
-        return 0;
+        goto err;
     }
 
     struct timespec now;
     if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
         nob_log(ERROR, "clock_gettime");
-        return 0;
+        goto err;
     }
 
     tspec.it_interval.tv_sec = 0;
@@ -357,12 +332,23 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
 
     if (timerfd_settime(s->timerfd, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
         nob_log(ERROR, "timerfd_settime");
-        return 0;
+        goto err;
     }
 
     audio_server_load_audios(s);
-
     return 1;
+
+err:
+    if (s->sockfd > 0) {
+        close(s->sockfd);
+    }
+    if (s->epollfd > 0) {
+        close(s->sockfd);
+    }
+    if (s->timerfd > 0) {
+        close(s->sockfd);
+    }
+    return 0;
 }
 
 void audio_server_destroy(Audio_Server *s) {
@@ -372,16 +358,9 @@ void audio_server_destroy(Audio_Server *s) {
     }
     hmfree(s->clients);
     hmfree(s->active_clients);
-    if (s->timerfd) {
-        close(s->timerfd);
-    }
-    if (s->sockfd > 0) {
-        shutdown(s->sockfd, SHUT_RDWR);
-        close(s->sockfd);
-    }
-    if (s->epollfd > 0) {
-        close(s->epollfd);
-    }
+    close(s->timerfd);
+    close(s->sockfd);
+    close(s->epollfd);
     for (int i = 0; i < arrlen(s->audios); i++) {
         audio2_destroy(&s->audios[i]);
     }
@@ -451,27 +430,52 @@ void audio_server_load_audios(Audio_Server *s) {
 }
 
 void audio_server_handle_accept(Audio_Server *s) {
-    struct epoll_event ev = {0};
-    int fd = accept(s->sockfd, NULL, NULL);
+    while (true) {
+        struct epoll_event ev = {0};
+        int fd = accept(s->sockfd, NULL, NULL);
 
-    if (fd == -1) {
-        nob_log(ERROR, "accept");
-        return;
-    }
+        if (fd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
+        }
 
-    Client_State c = {0};
-    c.sockfd = fd;
-    ev.events = EPOLLRDHUP | EPOLLIN;
-    ev.data.fd = fd;
+        if (fd == -1) {
+            nob_log(ERROR, "accept");
+            return;
+        }
 
-    if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
-        nob_log(ERROR, "epoll_ctl");
+        Client_State c = {0};
+        c.sockfd = fd;
+        ev.events = EPOLLRDHUP | EPOLLIN | EPOLLET;
+        ev.data.fd = fd;
+
+        /* Set socket to nonblocking */
+        int flags = fcntl(fd, F_GETFL);
+
+        if (flags == -1) {
+            nob_log(ERROR, "fcntl F_GETFL");
+            goto err;
+        }
+
+        flags |= O_NONBLOCK;
+
+        if (fcntl(fd, F_SETFL, flags) == -1) {
+            nob_log(ERROR, "fcntl F_SETFL");
+            goto err;
+        }
+
+        if (epoll_ctl(s->epollfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+            nob_log(ERROR, "epoll_ctl");
+            goto err;
+        }
+
+        hmput(s->clients, fd, c);
+        nob_log(INFO, "Client connected");
+        continue;
+
+    err:
         close(fd);
-        return;
+        break;
     }
-
-    hmput(s->clients, fd, c);
-    nob_log(INFO, "Client connected");
 }
 
 void audio_server_handle_exit(Audio_Server *s, int event_sock) {
@@ -634,5 +638,68 @@ void audio2_destroy(Audio2 *a) {
     }
     if (close(a->fd) == -1) {
         nob_log(ERROR, "close");
+    }
+}
+
+void audio_server_handle_request(Audio_Server *s, int event_sock) {
+    while (true) {
+        Request req = {0};
+        Response res = {0};
+        ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_NOSIGNAL);
+
+        if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+
+        if (bytes_readed == -1) {
+            nob_log(ERROR, "recv");
+            break;
+        }
+
+        if (bytes_readed == 0) {
+            audio_server_handle_exit(s, event_sock);
+            break;
+        }
+
+        switch (req.header.kind) {
+        case KIND_LIST:
+            audio_server_handle_list(s, event_sock, &req, &res);
+            break;
+        case KIND_START:
+            audio_server_handle_start(s, event_sock, &req, &res);
+            break;
+        case KIND_STOP:
+            audio_server_handle_stop(s, event_sock, &req, &res);
+            break;
+        case KIND_RESUME:
+            audio_server_handle_resume(s, event_sock, &req, &res);
+            break;
+        default:
+            nob_log(ERROR, "Invalid request");
+            break;
+        }
+    }
+}
+
+void audio_server_handle_timer(Audio_Server *s, int timerfd) {
+    uint64_t expdir;
+    ssize_t bytes_readed = read(s->timerfd, &expdir, sizeof(expdir));
+
+    if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return;
+    }
+
+    if (bytes_readed == -1) {
+        nob_log(ERROR, "read");
+    }
+
+    for (size_t i = 0; i < hmlen(s->active_clients); i++) {
+        int key = s->active_clients[i].key;
+        ptrdiff_t idx = hmgeti(s->clients, key);
+        if (idx == -1) {
+            continue;
+        }
+        Client_State *c = &s->clients[idx].value;
+        audio_server_transmit_packet(s, c);
     }
 }

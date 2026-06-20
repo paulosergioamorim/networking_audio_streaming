@@ -8,7 +8,6 @@
 #include <limits.h>
 #include <linux/limits.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +49,7 @@ typedef struct {
     libvlc_instance_t *vlc_instance;
     libvlc_media_player_t *vlc_mp;
     Queue queue;
+    int kind_list_start;
     int is_playing;
     int has_playered;
     Delay_Stats stats;
@@ -90,6 +90,8 @@ void audio_client_handle_start(Audio_Client *c);
 
 void audio_client_handle_exit(Audio_Client *c);
 
+void audio_client_handle_response(Audio_Client *c);
+
 Message_Kind audio_client_parse_str_to_enum(const char *str);
 
 void audio_client_display_usage(FILE *fp) {
@@ -116,7 +118,6 @@ int main(int argc, char **argv) {
     }
 
     if (!audio_client_init(&c, *ipaddr, *port)) {
-        audio_client_destroy(&c);
         return 1;
     }
 
@@ -125,7 +126,6 @@ int main(int argc, char **argv) {
     const int MAX_EVENTS = 10;
     int N = 0;
     struct epoll_event events[MAX_EVENTS];
-    int kind_list_start = 0;
 
     while (!signaled) {
         N = epoll_wait(c.epollfd, events, MAX_EVENTS, -1);
@@ -216,84 +216,7 @@ int main(int argc, char **argv) {
                 }
 
                 if (event_mask & EPOLLIN) {
-                    Response res = {0};
-                    ssize_t bytes_readed = recv(c.sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
-                    Message_Kind kind = res.header.kind;
-
-                    if (bytes_readed == -1) {
-                        nob_log(ERROR, "recv");
-                        break;
-                    }
-
-                    if (kind == KIND_LIST) {
-                        if (res.header.code == STATUS_LIST_END) {
-                            printf(LIST_LINE_HORIZONTAL);
-                            kind_list_start = 0;
-                            continue;
-                        }
-                        bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
-
-                        if (bytes_readed == -1) {
-                            nob_log(ERROR, "recv");
-                            continue;
-                        }
-
-                        if (!kind_list_start) {
-                            printf(LIST_LINE_HORIZONTAL);
-                            kind_list_start = 1;
-                        }
-
-                        printf("| %s %*s |\n", res.buf, 80 - (int)res.header.len, " ");
-                        continue;
-                    }
-
-                    if (kind == KIND_START) {
-                        if (res.header.code == STATUS_ERR_NO_FILE) {
-                            printf("No audio file\n");
-                            break;
-                        }
-                        audio_client_handle_start(&c);
-                        printf("Start audio streaming...\n");
-                        continue;
-                    }
-
-                    if (kind == KIND_STOP) {
-                        c.is_playing = 0;
-                        libvlc_media_player_pause(c.vlc_mp);
-                        printf("Stop audio streaming...\n");
-                        continue;
-                    }
-
-                    if (kind == KIND_RESUME) {
-                        c.is_playing = 1;
-                        libvlc_media_player_play(c.vlc_mp);
-                        printf("Resume audio streaming...\n");
-                        continue;
-                    }
-
-                    if (kind == KIND_STREAM) {
-                        bytes_readed = recv(c.sockfd, res.buf, res.header.len, MSG_NOSIGNAL | MSG_DONTWAIT);
-
-                        if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                            nob_log(WARNING, "Would block");
-                            break;
-                        }
-
-                        if (bytes_readed == -1) {
-                            nob_log(ERROR, "recv");
-                            break;
-                        }
-
-                        struct timeval now;
-                        gettimeofday(&now, NULL);
-                        unsigned long latency = (1000000 * now.tv_sec + now.tv_usec) -
-                                                (1000000 * res.header.tv.tv_sec + res.header.tv.tv_usec);
-                        audio_client_stats_update(&c.stats, latency);
-                        queue_enqueue(&c.queue, (unsigned char *)res.buf, bytes_readed);
-                        continue;
-                    }
-
-                    nob_log(WARNING, "Invalid response");
+                    audio_client_handle_response(&c);
                 }
             }
         }
@@ -305,27 +228,17 @@ int main(int argc, char **argv) {
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port) {
     *c = (Audio_Client){0};
-
-    sigset_t mask;
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGINT);
-
-    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) == -1) {
-        nob_log(ERROR, "pthread_sigmask");
-        return 0;
-    }
-
     c->sockfd = audio_client_create_tcp_socket(server_addr, server_tcp_port);
 
-    if (c->sockfd == -1) {
-        return 0;
+    if (c->sockfd == 0) {
+        goto err;
     }
 
     c->epollfd = epoll_create1(0);
 
     if (c->epollfd == -1) {
         nob_log(ERROR, "epoll_create1");
-        return 0;
+        goto err;
     }
 
     struct epoll_event ev;
@@ -334,15 +247,15 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
     if (epoll_ctl(c->epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev) == -1) {
         nob_log(ERROR, "epoll_ctl");
-        return 0;
+        goto err;
     }
 
-    ev.events = EPOLLRDHUP | EPOLLIN;
+    ev.events = EPOLLRDHUP | EPOLLIN | EPOLLET;
     ev.data.fd = c->sockfd;
 
     if (epoll_ctl(c->epollfd, EPOLL_CTL_ADD, c->sockfd, &ev) == -1) {
         nob_log(ERROR, "epoll_ctl");
-        return 0;
+        goto err;
     }
 
     queue_init(&c->queue, KB(32));
@@ -350,38 +263,48 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     const char *args[] = {"--quiet"};
     c->vlc_instance = libvlc_new(1, args);
 
-    if (c->vlc_instance == NULL) {
+    if (!c->vlc_instance) {
         nob_log(ERROR, "libvlc_new");
-        return 0;
+        goto err;
     }
 
     libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
 
     if (!vlc_media) {
         nob_log(ERROR, "libvlc_media_new_callbacks");
-        return 0;
+        goto err;
     }
 
     c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
 
     if (!c->vlc_mp) {
         nob_log(ERROR, "libvlc_media_player_new_from_media");
-        return 0;
+        goto err;
     }
 
     libvlc_media_release(vlc_media);
 
     if (signals_sigint_sigaction() == -1) {
         nob_log(ERROR, "sigaction");
-        return 0;
-    }
-
-    if (pthread_sigmask(SIG_UNBLOCK, &mask, NULL) == -1) {
-        nob_log(ERROR, "pthread_sigmask");
-        return 0;
+        goto err;
     }
 
     return 1;
+
+err:
+    if (c->sockfd > 0) {
+        close(c->sockfd);
+    }
+    if (c->epollfd > 0) {
+        close(c->epollfd);
+    }
+    if (c->vlc_instance) {
+        libvlc_release(c->vlc_instance);
+    }
+    if (c->vlc_mp) {
+        libvlc_media_player_release(c->vlc_mp);
+    }
+    return 0;
 }
 
 int audio_client_create_tcp_socket(const char *server_addr, int port) {
@@ -389,7 +312,7 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
 
     if (fd == -1) {
         nob_log(ERROR, "socket");
-        return -1;
+        goto err;
     }
 
     struct sockaddr_in srv_addr = {0};
@@ -398,51 +321,53 @@ int audio_client_create_tcp_socket(const char *server_addr, int port) {
 
     int ok = inet_pton(AF_INET, server_addr, &srv_addr.sin_addr.s_addr);
 
-    if (ok == 0) {
-        nob_log(ERROR, "Invalid -ipaddr format");
-        return -1;
-    }
-
-    if (ok == -1) {
-        nob_log(ERROR, "inet_pton");
-        return -1;
+    if (ok <= 0) {
+        nob_log(ERROR, ok == 0 ? "Invalid -ipaddr format" : "inet_pton");
+        goto err;
     }
 
     if (connect(fd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) == -1) {
         nob_log(ERROR, "connect");
-        return -1;
+        goto err;
+    }
+
+    /* Set socket to nonblocking */
+    int flags = fcntl(fd, F_GETFL);
+
+    if (flags == -1) {
+        nob_log(ERROR, "fcntl F_GETFL");
+        goto err;
+    }
+
+    flags |= O_NONBLOCK;
+
+    if (fcntl(fd, F_SETFL, flags) == -1) {
+        nob_log(ERROR, "fcntl F_SETFL");
+        goto err;
     }
 
     return fd;
+
+err:
+    if (fd > 0) {
+        close(fd);
+    }
+    return 0;
 }
 
 void audio_client_destroy(Audio_Client *c) {
     queue_abort(&c->queue);
-
-    if (c->vlc_mp) {
-        libvlc_media_player_stop(c->vlc_mp);
-        libvlc_media_player_release(c->vlc_mp);
-    }
-    if (c->vlc_instance) {
-        libvlc_release(c->vlc_instance);
-    }
-
+    libvlc_media_player_stop(c->vlc_mp);
+    libvlc_media_player_release(c->vlc_mp);
+    libvlc_release(c->vlc_instance);
     audio_client_handle_exit(c);
     c->is_playing = 0;
     queue_destroy(&c->queue);
 }
 
 void audio_client_handle_exit(Audio_Client *c) {
-    if (c->sockfd <= 0) {
-        return;
-    }
-
-    shutdown(c->sockfd, SHUT_RDWR);
     close(c->sockfd);
-
-    if (c->epollfd > 0) {
-        close(c->epollfd);
-    }
+    close(c->epollfd);
 }
 
 Message_Kind audio_client_parse_str_to_enum(const char *str) {
@@ -530,4 +455,90 @@ void audio_client_stats_print(const Delay_Stats *s) {
            "| avg     : us %-5lu                  |\n"
            "|=====================================|\n",
            s->count, s->min_us, s->max_us, s->sum_us / s->count);
+}
+
+void audio_client_handle_response(Audio_Client *c) {
+    while (true) {
+        Response res = {0};
+        ssize_t bytes_readed = recv(c->sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
+        Message_Kind kind = res.header.kind;
+
+        if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+
+        if (bytes_readed == -1) {
+            nob_log(ERROR, "recv");
+            break;
+        }
+
+        if (kind == KIND_LIST) {
+            if (res.header.code == STATUS_LIST_END) {
+                printf(LIST_LINE_HORIZONTAL);
+                c->kind_list_start = 0;
+                continue;
+            }
+            bytes_readed = recv(c->sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+
+            if (bytes_readed == -1) {
+                nob_log(ERROR, "recv");
+                continue;
+            }
+
+            if (!c->kind_list_start) {
+                printf(LIST_LINE_HORIZONTAL);
+                c->kind_list_start = 1;
+            }
+
+            printf("| %s %*s |\n", res.buf, 80 - (int)res.header.len, " ");
+            continue;
+        }
+
+        if (kind == KIND_START) {
+            if (res.header.code == STATUS_ERR_NO_FILE) {
+                printf("No audio file\n");
+                break;
+            }
+            audio_client_handle_start(c);
+            printf("Start audio streaming...\n");
+            continue;
+        }
+
+        if (kind == KIND_STOP) {
+            c->is_playing = 0;
+            libvlc_media_player_pause(c->vlc_mp);
+            printf("Stop audio streaming...\n");
+            continue;
+        }
+
+        if (kind == KIND_RESUME) {
+            c->is_playing = 1;
+            libvlc_media_player_play(c->vlc_mp);
+            printf("Resume audio streaming...\n");
+            continue;
+        }
+
+        if (kind == KIND_STREAM) {
+            bytes_readed = recv(c->sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+
+            if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                break;
+            }
+
+            if (bytes_readed == -1) {
+                nob_log(ERROR, "recv");
+                break;
+            }
+
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            unsigned long latency =
+                (1000000 * now.tv_sec + now.tv_usec) - (1000000 * res.header.tv.tv_sec + res.header.tv.tv_usec);
+            audio_client_stats_update(&c->stats, latency);
+            queue_enqueue(&c->queue, (unsigned char *)res.buf, bytes_readed);
+            continue;
+        }
+
+        nob_log(WARNING, "Invalid response");
+    }
 }
