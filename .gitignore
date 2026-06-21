@@ -4,3 +4,4 @@
 *.d
 server
 client
+compile_commands.json

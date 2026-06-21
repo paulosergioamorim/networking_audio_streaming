@@ -1,5 +1,5 @@
 #include "queue.h"
-#include "logger.h"
+#include "nob.h"
 #include <pthread.h>
 #include <stdlib.h>
 
@@ -7,26 +7,23 @@ int queue_init(Queue *q, size_t cap) {
     *q = (Queue){0};
 
     if (cap == 0) {
-        LOG_ERROR("capacity equals to 0");
-        return 1;
+        nob_log(ERROR, "capacity equals to 0");
+        goto err_cap;
     }
 
     if (pthread_mutex_init(&q->mu, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("pthread_mutex_init");
-        return 0;
+        nob_log(ERROR, "pthread_mutex_init");
+        goto err_mu;
     }
 
     if (pthread_cond_init(&q->cond_empty, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("pthread_cond_init");
-        pthread_mutex_destroy(&q->mu);
-        return 0;
+        nob_log(ERROR, "pthread_cond_init");
+        goto err_empty;
     }
 
     if (pthread_cond_init(&q->cond_full, NULL) == -1) {
-        LOG_CUSTOM_ERRNO("pthread_cond_init");
-        pthread_mutex_destroy(&q->mu);
-        pthread_cond_destroy(&q->cond_empty);
-        return 0;
+        nob_log(ERROR, "pthread_cond_init");
+        goto err_full;
     }
 
     q->is_active = 1;
@@ -34,21 +31,27 @@ int queue_init(Queue *q, size_t cap) {
     q->buf = malloc(cap * sizeof(*q->buf));
 
     if (!q->buf) {
-        LOG_CUSTOM_ERRNO("malloc");
-        pthread_mutex_destroy(&q->mu);
-        pthread_cond_destroy(&q->cond_empty);
-        pthread_cond_destroy(&q->cond_full);
-        return 0;
+        nob_log(ERROR, "malloc");
+        goto err_malloc;
     }
 
     return 1;
+
+err_malloc:
+    pthread_cond_destroy(&q->cond_empty);
+err_full:
+    pthread_mutex_destroy(&q->mu);
+err_empty:
+    pthread_cond_destroy(&q->cond_full);
+err_cap:
+err_mu:
+    return 0;
 }
 
 void queue_enqueue(Queue *q, unsigned char *src, size_t len) {
     pthread_mutex_lock(&q->mu);
 
     while (q->count + len > q->cap && q->is_active) {
-        LOG_DEBUG("Blocking thread on 'cond_full'");
         pthread_cond_wait(&q->cond_full, &q->mu);
     }
 
@@ -71,7 +74,6 @@ size_t queue_dequeue(Queue *q, unsigned char *dest, size_t len) {
     pthread_mutex_lock(&q->mu);
 
     while (q->count == 0 && q->is_active) {
-        LOG_DEBUG("Blocking thread on 'cond_empty'");
         pthread_cond_wait(&q->cond_empty, &q->mu);
     }
 
@@ -111,16 +113,10 @@ void queue_abort(Queue *q) {
 
 void queue_destroy(Queue *q) {
     pthread_mutex_lock(&q->mu);
-
-    if (q->buf) {
-        free(q->buf);
-    }
-
+    free(q->buf);
     pthread_mutex_unlock(&q->mu);
-
     pthread_mutex_destroy(&q->mu);
     pthread_cond_destroy(&q->cond_empty);
     pthread_cond_destroy(&q->cond_full);
-
     *q = (Queue){0};
 }

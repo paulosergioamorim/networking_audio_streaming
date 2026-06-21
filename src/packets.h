@@ -12,7 +12,7 @@ typedef enum {
     KIND_STOP,
     KIND_RESUME,
     KIND_STREAM,
-    // this commands is client only
+    // these commands are client only
     KIND_HELP,
     KIND_EXIT,
     KIND_STATS,
@@ -38,7 +38,7 @@ typedef struct {
     size_t len; // the lenght of 'buf'
 } Response_Header;
 
-#define RESPONSE_MAX 4096
+#define RESPONSE_MAX 1600
 
 typedef struct {
     Response_Header header;
