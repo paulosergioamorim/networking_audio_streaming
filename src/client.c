@@ -231,6 +231,9 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     if (c->sock == 0)
         goto err;
 
+    if (fd_set_nonblocking(c->sock) == 0)
+        goto err;
+
     c->epoll = epoll_create1(0);
 
     if (c->epoll == -1) {
