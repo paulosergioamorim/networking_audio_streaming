@@ -1,7 +1,6 @@
 #include "packets.h"
 #include "signals.h"
 #include "suffix.h"
-#include "errnoname.h"
 #include "utils.h"
 #include <arpa/inet.h>
 #include <dirent.h>

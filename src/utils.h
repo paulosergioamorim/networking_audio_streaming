@@ -1,10 +1,9 @@
 #ifndef SOCKETS_H
 #define SOCKETS_H
 
+#include "errnoname.h"
 #include <errno.h>
 #include <stdint.h>
-
-extern const char *errnoname(int errno_);
 
 #define TRACE_FMT "%s:%d %s() [%s] %s"
 #define TRACE_ARG __FILE__, __LINE__, __FUNCTION__, errnoname(errno), strerror(errno)
