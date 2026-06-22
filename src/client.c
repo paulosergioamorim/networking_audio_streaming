@@ -200,7 +200,7 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                ssize_t bytes_written = send(c.sockfd, &req, sizeof(req), MSG_NOSIGNAL);
+                ssize_t bytes_written = send(c.sockfd, &req, sizeof(req), 0);
                 if (bytes_written == -1) {
                     nob_log(ERROR, "send");
                     continue;
@@ -459,7 +459,7 @@ void audio_client_stats_print(const Delay_Stats *s) {
 void audio_client_handle_response(Audio_Client *c) {
     while (true) {
         Response res = {0};
-        ssize_t bytes_readed = recv(c->sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL);
+        ssize_t bytes_readed = recv(c->sockfd, &res.header, sizeof(res.header), 0);
         Message_Kind kind = res.header.kind;
 
         if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -477,7 +477,7 @@ void audio_client_handle_response(Audio_Client *c) {
                 c->kind_list_start = 0;
                 continue;
             }
-            bytes_readed = recv(c->sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+            bytes_readed = recv(c->sockfd, res.buf, res.header.len, 0);
 
             if (bytes_readed == -1) {
                 nob_log(ERROR, "recv");
@@ -518,7 +518,7 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            bytes_readed = recv(c->sockfd, res.buf, res.header.len, MSG_NOSIGNAL);
+            bytes_readed = recv(c->sockfd, res.buf, res.header.len, 0);
 
             if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 break;

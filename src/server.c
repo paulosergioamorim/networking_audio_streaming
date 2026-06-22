@@ -170,8 +170,6 @@ int main(int argc, char **argv) {
 void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     Response res = {0};
     int sockfd = c->sockfd;
-    res.header.kind = KIND_STREAM;
-    gettimeofday(&res.header.tv, NULL);
     Audio2 *audio = &s->audios[c->audio_idx];
     size_t nbytes = min(sizeof(res.buf), audio->file_size - c->offset);
 
@@ -183,24 +181,35 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
         return;
     }
 
-    memcpy(res.buf, audio->buf + c->offset, nbytes);
-    res.header.code = STATUS_OK;
-    res.header.len = nbytes;
-    ssize_t bytes_written = send(sockfd, &res.header, sizeof(res.header), MSG_NOSIGNAL | MSG_MORE);
+    res.header = (Response_Header){
+        .kind = KIND_STREAM,
+        .code = STATUS_OK,
+        .len = nbytes,
+    };
+    gettimeofday(&res.header.tv, NULL);
+
+    const int n = 2;
+    struct msghdr msg = {0};
+    struct iovec vec[n];
+    vec[0].iov_base = &res.header;
+    vec[0].iov_len = sizeof(res.header);
+    vec[1].iov_base = audio->buf + c->offset;
+    vec[1].iov_len = nbytes;
+    msg.msg_iov = vec;
+    msg.msg_iovlen = n;
+
+    ssize_t bytes_written = sendmsg(sockfd, &msg, 0);
 
     if (bytes_written == -1) {
-        nob_log(ERROR, "send");
+        nob_log(ERROR, "sendmsg");
         return;
     }
 
-    bytes_written = send(sockfd, res.buf, nbytes, MSG_NOSIGNAL);
-
-    if (bytes_written == -1) {
-        nob_log(ERROR, "send");
+    if (bytes_written <= sizeof(res.header)) {
         return;
     }
 
-    c->offset += bytes_written;
+    c->offset += -sizeof(res.header) + bytes_written;
 }
 
 int audio_server_create_tcp_socket(const char *addr, int port) {
@@ -465,30 +474,39 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock) {
 
 void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Response *res) {
     nob_log(INFO, "Client request /list");
-    res->header.kind = KIND_LIST;
-    res->header.code = STATUS_LIST_CONTINUE;
 
-    for (int i = 0; i < arrlen(s->audios); i++) {
-        res->header.len = s->audios[i].display_name_size;
-        strncpy(res->buf, s->audios[i].display_name, sizeof(res->buf));
-        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL | MSG_MORE);
+    Response_Header header_end = {
+        .kind = KIND_LIST,
+        .code = STATUS_LIST_END,
+    };
 
-        if (bytes_written == -1) {
-            nob_log(ERROR, "send");
-        }
+    struct msghdr msg = {0};
+    int audios_len = arrlen(s->audios);
+    Response_Header headers[audios_len];
+    const int n = 2 * audios_len + 1;
+    struct iovec vec[n];
 
-        bytes_written = send(event_sock, res->buf, res->header.len, MSG_NOSIGNAL | MSG_MORE);
-
-        if (bytes_written == -1) {
-            nob_log(ERROR, "send");
-        }
+    for (int i = 0; i < audios_len; i++) {
+        headers[i] = (Response_Header){
+            .kind = KIND_LIST,
+            .code = STATUS_LIST_CONTINUE,
+            .len = s->audios[i].display_name_size,
+        };
+        vec[2 * i].iov_base = &headers[i];
+        vec[2 * i].iov_len = sizeof(headers[i]);
+        vec[2 * i + 1].iov_base = s->audios[i].display_name;
+        vec[2 * i + 1].iov_len = headers[i].len;
     }
 
-    res->header.code = STATUS_LIST_END;
-    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    vec[n - 1].iov_base = &header_end;
+    vec[n - 1].iov_len = sizeof(header_end);
+    msg.msg_iov = vec;
+    msg.msg_iovlen = n;
+
+    ssize_t bytes_written = sendmsg(event_sock, &msg, 0);
 
     if (bytes_written == -1) {
-        nob_log(ERROR, "send");
+        nob_log(ERROR, "sendmsg");
     }
 }
 
@@ -499,7 +517,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
 
     if (!(0 <= idx && idx < arrlen(s->audios))) {
         res->header.code = STATUS_ERR_NO_FILE;
-        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+        ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
         if (bytes_written == -1) {
             nob_log(ERROR, "send");
         }
@@ -509,7 +527,7 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
     audio_server_client_set_streaming(s, event_sock, idx);
 
     res->header.code = STATUS_OK;
-    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
     if (bytes_written == -1) {
         nob_log(ERROR, "send");
     }
@@ -520,7 +538,7 @@ void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Res
     audio_server_client_unset_streaming(s, event_sock);
     res->header.kind = KIND_STOP;
     res->header.code = STATUS_OK;
-    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
     if (bytes_written == -1) {
         nob_log(ERROR, "send");
     }
@@ -531,7 +549,7 @@ void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, R
     audio_server_client_set_streaming(s, event_sock, -1);
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
-    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), MSG_NOSIGNAL);
+    ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
     if (bytes_written == -1) {
         nob_log(ERROR, "send");
     }
@@ -597,7 +615,7 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
     while (true) {
         Request req = {0};
         Response res = {0};
-        ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), MSG_NOSIGNAL);
+        ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), 0);
 
         if (bytes_readed == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             break;
