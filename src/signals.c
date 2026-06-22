@@ -1,6 +1,6 @@
 #include "signals.h"
-#include <stddef.h>
 #include <signal.h>
+#include <stddef.h>
 
 volatile sig_atomic_t signaled;
 
