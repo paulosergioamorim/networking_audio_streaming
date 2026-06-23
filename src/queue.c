@@ -26,7 +26,6 @@ int queue_init(Queue *q, size_t cap) {
         goto err_full;
     }
 
-    q->is_active = 1;
     q->cap = cap;
     q->buf = malloc(cap * sizeof(*q->buf));
 
@@ -35,6 +34,7 @@ int queue_init(Queue *q, size_t cap) {
         goto err_malloc;
     }
 
+    q->is_active = 1;
     return 1;
 
 err_malloc:

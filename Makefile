@@ -1,5 +1,5 @@
 CC 		:= gcc
-FLAGS 	:= -Wall
+FLAGS 	:= -D_GNU_SOURCE -Wall
 SRC 	:= $(wildcard src/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
 DEP 	:= $(OBJ:.o=.d)
@@ -16,10 +16,10 @@ objFolder:
 obj/%.o: src/%.c | objFolder
 	$(CC) $< -o $@ -c $(FLAGS) -MMD -MP
 
-server: obj/server.o obj/custom_logger.o obj/signals.o obj/suffix.o
+server: obj/server.o obj/signals.o obj/suffix.o obj/utils.o
 	$(CC) $^ -o $@ $(FLAGS)
 
-client: obj/client.o obj/custom_logger.o obj/signals.o obj/queue.o
+client: obj/client.o obj/signals.o obj/queue.o obj/utils.o
 	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread
 
 clean:

@@ -16,10 +16,16 @@ typedef enum {
     KIND_HELP,
     KIND_EXIT,
     KIND_STATS,
-    KIND_RESET
+    KIND_RESET,
 } Message_Kind;
 
-typedef enum { STATUS_NONE, STATUS_OK, STATUS_LIST_CONTINUE, STATUS_LIST_END, STATUS_ERR_NO_FILE } Status_Code;
+typedef enum {
+    STATUS_NONE,
+    STATUS_OK,
+    STATUS_LIST_CONTINUE,
+    STATUS_LIST_END,
+    STATUS_ERR_NO_FILE,
+} Status_Code;
 
 typedef struct {
     Message_Kind kind;
