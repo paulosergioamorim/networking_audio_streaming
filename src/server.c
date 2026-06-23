@@ -196,7 +196,8 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
         return;
     }
 
-    if (bytes_written <= sizeof(res.header)) {
+    if (bytes_written - sizeof(res.header) < res.header.len) {
+        nob_log(WARNING, "Parcial write");
         return;
     }
 

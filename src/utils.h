@@ -1,12 +1,12 @@
-#ifndef SOCKETS_H
-#define SOCKETS_H
+#ifndef UTILS_H
+#define UTILS_H
 
-#include "errnoname.h"
 #include <errno.h>
 #include <stdint.h>
+#include <string.h>
 
 #define TRACE_FMT "%s:%d %s() [%s] %s"
-#define TRACE_ARG __FILE__, __LINE__, __FUNCTION__, errnoname(errno), strerror(errno)
+#define TRACE_ARG __FILE__, __LINE__, __FUNCTION__, strerrorname_np(errno), strerror(errno)
 
 typedef int Epoll_Fd;
 typedef int Sock_Fd;
@@ -27,4 +27,4 @@ int epoll_del_fd(Epoll_Fd epoll, int fd);
 
 int epoll_mod_fd(Epoll_Fd epoll, int fd, uint32_t events);
 
-#endif /* ifndef SOCKETS_H */
+#endif /* ifndef UTILS_H */

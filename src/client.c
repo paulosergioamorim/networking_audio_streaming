@@ -459,18 +459,19 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            for (size_t i = res.header.len; i; i -= bytes_readed) {
-                bytes_readed = recv(c->sock, res.buf + i, i, 0);
+            bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
 
-                if (bytes_readed == -1) {
-                    if (!(errno == EAGAIN || errno == EWOULDBLOCK))
-                        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-                    goto err;
-                }
+            if (bytes_readed == -1) {
+                if (!(errno == EAGAIN || errno == EWOULDBLOCK))
+                    continue;
+                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
             }
+
+            if (bytes_readed < res.header.len)
+                nob_log(WARNING, "Parcial read");
+
             audio_client_stats_update(c, &res);
             queue_enqueue(&c->queue, (unsigned char *)res.buf, bytes_readed);
-        err:
             continue;
         }
 
