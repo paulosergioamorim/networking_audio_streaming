@@ -274,10 +274,8 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
     libvlc_media_release(vlc_media);
 
-    if (signals_sigint_sigaction() == -1) {
-        nob_log(ERROR, "sigaction");
+    if (signals_sigint_sigaction() == 0)
         goto err;
-    }
 
     return 1;
 
@@ -461,16 +459,18 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
+            for (size_t i = res.header.len; i; i -= bytes_readed) {
+                bytes_readed = recv(c->sock, res.buf + i, i, 0);
 
-            if (bytes_readed == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    break;
-                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+                if (bytes_readed == -1) {
+                    if (!(errno == EAGAIN || errno == EWOULDBLOCK))
+                        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+                    goto err;
+                }
             }
-
             audio_client_stats_update(c, &res);
             queue_enqueue(&c->queue, (unsigned char *)res.buf, bytes_readed);
+        err:
             continue;
         }
 

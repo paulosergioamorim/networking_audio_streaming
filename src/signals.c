@@ -1,4 +1,6 @@
 #include "signals.h"
+#include "nob.h"
+#include "utils.h"
 #include <signal.h>
 #include <stddef.h>
 
@@ -14,8 +16,9 @@ int signals_sigint_sigaction() {
     sa.sa_handler = &SIGINT_HANDLER;
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
-        return -1;
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        return 0;
     }
 
-    return 0;
+    return 1;
 }

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "utils.h"
 #include "nob.h"
 #include "utils.h"
@@ -12,7 +13,7 @@
 Sock_Fd socket_create_server(const char *addr, int port, int backlog) {
     struct sockaddr_in sockaddr = {0};
     /* Step1: create a TCP socket */
-    Fd sock = socket(AF_INET, SOCK_STREAM, 0);
+    Sock_Fd sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
@@ -57,7 +58,7 @@ err:
 }
 
 Sock_Fd socket_create_client(const char *addr, int port) {
-    Fd sock = socket(AF_INET, SOCK_STREAM, 0);
+    Sock_Fd sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
@@ -89,7 +90,7 @@ err_socket:
 }
 
 Sock_Fd socket_accept(Fd socket) {
-    Fd sock = accept(socket, NULL, 0);
+    Sock_Fd sock = accept4(socket, NULL, NULL, SOCK_NONBLOCK);
 
     if (sock == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {

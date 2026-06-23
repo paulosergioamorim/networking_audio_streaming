@@ -206,10 +206,8 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
 int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     *s = (Audio_Server){0};
 
-    if (signals_sigint_sigaction() == -1) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+    if (signals_sigint_sigaction() == 0)
         goto err;
-    }
 
     s->sock = socket_create_server(addr, tcp_port, BACKLOG);
     if (s->sock == 0)
@@ -332,20 +330,13 @@ void audio_server_handle_accept(Audio_Server *s) {
         if (sock <= 0)
             break;
 
-        if (fd_set_nonblocking(sock) == 0)
-            goto err;
-
-        Client_State c = {
+        const Client_State c = {
             .sockfd = sock,
         };
 
         epoll_add_fd(s->epoll, sock, EPOLLRDHUP | EPOLLIN | EPOLLET);
         hmput(s->clients, sock, c);
         nob_log(INFO, "Client connected");
-        continue;
-
-    err:
-        close(sock);
     }
 }
 
