@@ -104,11 +104,14 @@ enxuto, graças ao header da requisição e resposta. Somente mensagens que real
 ### 7. Possíveis Melhorias
 
 1. Melhorar multiplexação de IO e sockets não bloqueantes
-- Uso de Edge-Triggered no `epoll` e uso total de sockets não bloqueantes.
+- [x] Uso de Edge-Triggered no `epoll` e uso total de sockets não bloqueantes.
+- **Atualização:**: uso de `mmap()` para mapeamento de arquivos de áudio e `sendmsg()` para envio de mensgagens como `KIND_LIST` e `KIND_STREAM`
 2. Melhorar a implementação com TCP
 - Criação de dois canais tcp separados: um para comandos e outro para áudio. Pensar numa melhor
-estratégia de "linkar" os dois sockets indicando que são de um mesmo cliente.
-- Melhor tratamento ao ocorrer TCP Zero Window. 
+estratégia de "linkar" os dois sockets indicando que são de um mesmo cliente. **Atualização:** não.
+- [x] Melhor tratamento ao ocorrer TCP Zero Window. **Atualização:** usando um timer para envio de stream.
 3. Utilizar outros protocolos
-- Usar UDP no streaming de áudio. Algumas dificuldades como entrega em ordem, confiável e controle de congestionamento.
-- Usar QUIC no streaming de áudio. Reimplementar a arquitetura do zero.
+- Usar UDP no streaming de áudio. Algumas dificuldades como entrega em ordem, confiável e controle de congestionamento. **Atulização:** talvez
+- Usar QUIC no streaming de áudio. Reimplementar a arquitetura do zero. **Atualização:** será refeito futuramente em Go
+4. **Atualização:** Melhorar implementação do consumo de áudio
+- Trocar implementação de fila? Permitir um futuro comando /seek?
