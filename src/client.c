@@ -90,6 +90,8 @@ void audio_client_handle_exit(Audio_Client *c);
 
 void audio_client_handle_response(Audio_Client *c);
 
+ssize_t recv_exact(int fd, void *buf, int n, int flags);
+
 Message_Kind audio_client_parse_str_to_enum(const char *str);
 
 void audio_client_display_usage(FILE *fp) {
@@ -459,22 +461,27 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
-
-            if (bytes_readed == -1) {
-                if (!(errno == EAGAIN || errno == EWOULDBLOCK))
-                    continue;
-                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-            }
-
-            if (bytes_readed < res.header.len)
-                nob_log(WARNING, "Parcial read");
-
+            ssize_t steps = recv_exact(c->sock, res.buf, res.header.len, 0);
+            if (steps > 1)
+                nob_log(WARNING, "Parcial read in %ld steps", steps);
             audio_client_stats_update(c, &res);
-            queue_enqueue(&c->queue, (unsigned char *)res.buf, bytes_readed);
+            queue_enqueue(&c->queue, (unsigned char *)res.buf, res.header.len);
             continue;
         }
 
         nob_log(WARNING, "Invalid response");
     }
+}
+
+ssize_t recv_exact(int fd, void *buf, int n, int flags) {
+    size_t steps = 0, bytes_readed = 0;
+    for (size_t i = 0; i < n; i += bytes_readed, steps++) {
+        bytes_readed = recv(fd, buf + i, n - i, flags);
+        if (bytes_readed == -1) {
+            if (!(errno == EAGAIN || errno == EWOULDBLOCK))
+                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+            bytes_readed = 0;
+        }
+    }
+    return steps;
 }

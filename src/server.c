@@ -192,7 +192,7 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     ssize_t bytes_written = sendmsg(sockfd, &msg, 0);
 
     if (bytes_written == -1) {
-        nob_log(ERROR, "sendmsg");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         return;
     }
 
@@ -394,7 +394,7 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
     ssize_t bytes_written = sendmsg(event_sock, &msg, 0);
 
     if (bytes_written == -1) {
-        nob_log(ERROR, "sendmsg");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
     }
 }
 
