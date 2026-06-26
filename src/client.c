@@ -44,14 +44,14 @@ typedef struct {
 } Delay_Stats;
 
 typedef struct {
-    Sock_Fd sock;
     libvlc_instance_t *vlc_instance;
     libvlc_media_player_t *vlc_mp;
+    Delay_Stats stats;
     Queue queue;
+    int sock;
     bool kind_list_start;
     bool is_playing;
     bool has_playered;
-    Delay_Stats stats;
 } Audio_Client;
 
 int open_cb(void *opaque, void **datap, uint64_t *sizep);

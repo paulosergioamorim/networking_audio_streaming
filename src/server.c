@@ -45,17 +45,17 @@ typedef struct {
 } Active_Clients;
 
 typedef struct {
-    char display_name[279]; // [idx] basename
-    int display_name_size;  // strlen(display_name) + 1
     void *buf;              // memory mapping of the file backed by file descriptor fd
-    size_t file_size;       // the file size
+    int display_name_size;  // strlen(display_name) + 1
     int fd;                 // file descriptor
+    size_t file_size;       // the file size
+    char display_name[279]; // [idx] basename
 } Audio2;
 
 typedef struct {
-    Sock_Fd sock;
-    Epoll_Fd epoll;
-    Fd timer;
+    int sock;
+    int epoll;
+    int timer;
     Clients_State *clients;
     Active_Clients *active_clients;
     Audio2 *audios;
