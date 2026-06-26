@@ -22,7 +22,7 @@
 #include "nob.h"
 
 #define AUDIODIR "./audios"
-#define BACKLOG 10
+#define BACKLOG 1024
 #define min(a, b) (((a) < (b)) ? a : b)
 
 typedef struct {
@@ -120,12 +120,11 @@ int main(int argc, char **argv) {
 
     nob_log(INFO, "Server listening on %s:%ld", *ipaddr, *port);
 
-    int N = 0;
-    const int MAX_EVENTS = 10;
+    int MAX_EVENTS = 64;
     struct epoll_event events[MAX_EVENTS];
 
     while (!signaled) {
-        N = epoll_wait(s.epoll, events, MAX_EVENTS, -1);
+        int N = epoll_wait(s.epoll, events, MAX_EVENTS, -1);
 
         if (N & EINTR) {
             continue;
@@ -179,7 +178,7 @@ void audio_server_transmit_packet(Audio_Server *s, Client_State *c) {
     };
     gettimeofday(&res.header.tv, NULL);
 
-    const int n = 2;
+    int n = 2;
     struct msghdr msg = {0};
     struct iovec vec[n];
     vec[0].iov_base = &res.header;
@@ -280,9 +279,7 @@ void audio_server_load_audios(Audio_Server *s) {
 
         Audio2 audio = {0};
         char *name = de->d_name;
-        const char *display_name_format = "[%ld] %s";
-        audio.display_name_size =
-            1 + snprintf(audio.display_name, sizeof(audio.display_name), display_name_format, i, name);
+        audio.display_name_size = 1 + snprintf(audio.display_name, sizeof(audio.display_name), "[%ld] %s", i, name);
         char path[PATH_MAX];
         strcpy(path, AUDIODIR "/");
         strcat(path, name);
@@ -331,7 +328,7 @@ void audio_server_handle_accept(Audio_Server *s) {
         if (sock <= 0)
             break;
 
-        const Client_State c = {
+        Client_State c = {
             .sockfd = sock,
         };
 
@@ -371,7 +368,7 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
     struct msghdr msg = {0};
     int audios_len = arrlen(s->audios);
     Response_Header headers[audios_len];
-    const int n = 2 * audios_len + 1;
+    int n = 2 * audios_len + 1;
     struct iovec vec[n];
 
     for (int i = 0; i < audios_len; i++) {

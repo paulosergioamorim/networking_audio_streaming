@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
 
     printf("/help for more info\n");
 
-    const int nfds = 2;
+    int nfds = 2;
     struct pollfd pollfds[] = {
         (struct pollfd){.fd = STDIN_FILENO, .events = POLLIN},
         (struct pollfd){.fd = c.sock, .events = POLLIN | POLLRDHUP},
