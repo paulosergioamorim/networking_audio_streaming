@@ -1,5 +1,9 @@
+/// @file queue.c
+/// @author paulosergioamorim
+
 #include "queue.h"
 #include "nob.h"
+#include "utils.h"
 #include <pthread.h>
 #include <stdlib.h>
 
@@ -8,29 +12,29 @@ int queue_init(Queue *q, size_t capacity) {
 
     if (capacity == 0) {
         nob_log(ERROR, "capacity equals to 0");
-        goto err_cap;
+        goto err_capacity;
     }
 
     if (pthread_mutex_init(&q->mu, NULL) == -1) {
-        nob_log(ERROR, "pthread_mutex_init");
-        goto err_mu;
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        goto err_mutext_init;
     }
 
     if (pthread_cond_init(&q->cond_empty, NULL) == -1) {
-        nob_log(ERROR, "pthread_cond_init");
-        goto err_empty;
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        goto err_cond_empty_init;
     }
 
     if (pthread_cond_init(&q->cond_full, NULL) == -1) {
-        nob_log(ERROR, "pthread_cond_init");
-        goto err_full;
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        goto err_cond_full_init;
     }
 
     q->capacity = capacity;
     q->items = malloc(capacity * sizeof(*q->items));
 
     if (!q->items) {
-        nob_log(ERROR, "malloc");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err_malloc;
     }
 
@@ -39,15 +43,20 @@ int queue_init(Queue *q, size_t capacity) {
 
 err_malloc:
     pthread_cond_destroy(&q->cond_empty);
-err_full:
+err_cond_full_init:
     pthread_mutex_destroy(&q->mu);
-err_empty:
+err_cond_empty_init:
     pthread_cond_destroy(&q->cond_full);
-err_cap:
-err_mu:
+err_capacity:
+err_mutext_init:
     return 0;
 }
 
+/**
+ * @brief Return the amount of bytes in the queue
+ * @param q Non null pointer to the queue
+ * @return The amount of bytes in the queue
+ */
 size_t queue_count(Queue *q) {
     size_t count = q->head - q->tail;
     if (q->head < q->tail)

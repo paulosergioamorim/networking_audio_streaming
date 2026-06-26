@@ -69,9 +69,6 @@ int socket_create_client(const char *addr, int port) {
         goto err_socket;
     }
 
-    if (fd_set_nonblocking(sock) == 0)
-        goto err;
-
     struct sockaddr_in sockaddr = {0};
     sockaddr.sin_family = AF_INET;
     sockaddr.sin_port = htons(port);
@@ -87,6 +84,9 @@ int socket_create_client(const char *addr, int port) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
+
+    if (fd_set_nonblocking(sock) == 0)
+        goto err;
 
     return sock;
 

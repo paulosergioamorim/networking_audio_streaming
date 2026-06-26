@@ -298,24 +298,14 @@ Message_Kind audio_client_parse_str_to_enum(const char *str) {
 void audio_client_handle_start(Audio_Client *c) {
     c->is_playing = 0;
     c->has_playered = 1;
-
     // free all libvlc threads
-    pthread_mutex_lock(&c->queue.mu);
-    c->queue.is_active = 0;
-    pthread_cond_broadcast(&c->queue.cond_empty);
-    pthread_mutex_unlock(&c->queue.mu);
-
+    queue_abort(&c->queue);
     // stop the libvlc player
     libvlc_media_player_stop(c->vlc_mp);
-
     // reset the circular queue
     queue_clear(&c->queue);
-
     // activate the queue
-    pthread_mutex_lock(&c->queue.mu);
     c->queue.is_active = 1;
-    pthread_mutex_unlock(&c->queue.mu);
-
     c->is_playing = 1;
     libvlc_media_player_play(c->vlc_mp);
 }
