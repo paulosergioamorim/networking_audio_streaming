@@ -19,7 +19,7 @@ utilizando epoll, multithreading utilizando a biblioteca pthread.
 Execute este comando para clonar o repositório:
 
 ```shell
-git clone git@github.com:paulosergioamorim/networking_audio_streaming.git
+git clone https://github.com/paulosergioamorim/networking_audio_streaming.git
 ```
 
 #### 2.2 Compile os programas
