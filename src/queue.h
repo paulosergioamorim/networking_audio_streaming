@@ -16,6 +16,7 @@ typedef struct {
     pthread_cond_t cond_empty;
     pthread_cond_t cond_full;
     int is_active;
+    size_t count;
     size_t head;
     size_t tail;
     size_t capacity;
@@ -36,6 +37,10 @@ int queue_init(Queue *q, size_t capacity);
  * @param len Amount of bytes to enqueue
  */
 void queue_enqueue(Queue *q, unsigned char *src, size_t len);
+
+void queue_enqueue2(Queue *q, int fd, size_t len);
+
+size_t queue_dequeue2(Queue *q, unsigned char *dest, size_t len);
 
 /**
  * @brief Dequeue at most len bytes of queue to dest. Blocks if queue is empty

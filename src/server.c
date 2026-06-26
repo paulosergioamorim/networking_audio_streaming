@@ -23,7 +23,6 @@
 
 #define AUDIODIR "./audios"
 #define BACKLOG 1024
-#define min(a, b) (((a) < (b)) ? a : b)
 
 typedef struct {
     size_t offset;
@@ -46,7 +45,7 @@ typedef struct {
 
 typedef struct {
     void *buf;              // memory mapping of the file backed by file descriptor fd
-    int display_name_size;  // strlen(display_name) + 1
+    int display_name_len;   // strlen(display_name)
     int fd;                 // file descriptor
     size_t file_size;       // the file size
     char display_name[279]; // [idx] basename
@@ -273,7 +272,7 @@ void audio_server_load_audios(Audio_Server *s) {
 
         Audio2 audio = {0};
         char *name = de->d_name;
-        audio.display_name_size = 1 + snprintf(audio.display_name, sizeof(audio.display_name), "[%ld] %s", i, name);
+        audio.display_name_len = snprintf(audio.display_name, sizeof(audio.display_name), "[%ld] %s", i, name);
         char path[PATH_MAX];
         strcpy(path, AUDIODIR "/");
         strcat(path, name);
@@ -369,7 +368,7 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
         headers[i] = (Response_Header){
             .kind = KIND_LIST,
             .code = STATUS_LIST_CONTINUE,
-            .len = s->audios[i].display_name_size,
+            .len = s->audios[i].display_name_len,
         };
         vec[2 * i].iov_base = &headers[i];
         vec[2 * i].iov_len = sizeof(headers[i]);

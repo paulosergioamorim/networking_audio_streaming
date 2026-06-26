@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 
@@ -14,15 +15,12 @@ int fd_set_nonblocking(int fd);
 int socket_create_server(const char *addr, int port, int backlog) {
     struct sockaddr_in sockaddr = {0};
     /* Step1: create a TCP socket */
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 
     if (sock == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
-
-    if (fd_set_nonblocking(sock) == 0)
-        goto err;
 
     int opt = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
@@ -160,15 +158,12 @@ int epoll_mod_fd(int epoll, int fd, uint32_t events) {
 int timer_realtime_create() {
     // timer for send streaming packets
     struct itimerspec tspec = {0};
-    int timer = timerfd_create(CLOCK_REALTIME, 0);
+    int timer = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK);
 
     if (timer == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
-
-    if (fd_set_nonblocking(timer) == 0)
-        goto err;
 
     struct timespec now;
     if (clock_gettime(CLOCK_REALTIME, &now) == -1) {

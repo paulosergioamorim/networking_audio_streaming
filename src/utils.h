@@ -7,6 +7,7 @@
 
 #define TRACE_FMT "%s:%d %s() [%s] %s"
 #define TRACE_ARG __FILE__, __LINE__, __FUNCTION__, strerrorname_np(errno), strerror(errno)
+#define min(a, b) (((a) < (b)) ? a : b)
 
 int timer_realtime_create();
 

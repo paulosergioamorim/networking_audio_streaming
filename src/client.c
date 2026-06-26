@@ -34,7 +34,7 @@
      "| /resume       -> resume streaming     |\n"                                                                     \
      "| /exit or ^C   -> to exit              |\n"                                                                     \
      "|=======================================|\n")
-#define LIST_LINE_HORIZONTAL ("|----------------------------------------------------------------------------------|\n")
+#define LIST_LINE_HORIZONTAL ("|===================================================================================|\n")
 
 typedef struct {
     unsigned long min_us;
@@ -66,7 +66,7 @@ void audio_client_stats_reset(Audio_Client *s);
 
 void audio_client_stats_update(Audio_Client *s, Response *res);
 
-void audio_client_stats_print(const Delay_Stats *s);
+void audio_client_stats_print(Audio_Client *c);
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port);
 
@@ -77,8 +77,6 @@ void audio_client_handle_start(Audio_Client *c);
 void audio_client_handle_exit(Audio_Client *c);
 
 void audio_client_handle_response(Audio_Client *c);
-
-ssize_t recv_exact(int fd, void *buf, int n, int flags);
 
 Message_Kind audio_client_parse_str_to_enum(const char *str);
 
@@ -151,7 +149,7 @@ int main(int argc, char **argv) {
                     printf(HELP_MSG);
                     break;
                 case KIND_STATS:
-                    audio_client_stats_print(&c.stats);
+                    audio_client_stats_print(&c);
                     break;
                 case KIND_RESET:
                     audio_client_stats_reset(&c);
@@ -330,7 +328,8 @@ void audio_client_stats_update(Audio_Client *s, Response *res) {
     s->stats.count++;
 }
 
-void audio_client_stats_print(const Delay_Stats *s) {
+void audio_client_stats_print(Audio_Client *c) {
+    Delay_Stats *s = &c->stats;
     if (s->count == 0) {
         printf("|=======================================|\n"
                "|          No packets received          |\n"
@@ -379,7 +378,7 @@ void audio_client_handle_response(Audio_Client *c) {
                 c->kind_list_start = 1;
             }
 
-            printf("| %s %*s |\n", res.buf, 80 - (int)res.header.len, " ");
+            printf("| %.*s %*s |\n", (int)res.header.len, res.buf, 80 - (int)res.header.len, " ");
             continue;
         }
 
@@ -408,29 +407,12 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            ssize_t steps = recv_exact(c->sock, res.buf, res.header.len, 0);
-            if (steps > 1)
-                nob_log(WARNING, "Parcial read in %ld steps", steps);
-            audio_client_stats_update(c, &res);
-            queue_enqueue(&c->queue, (unsigned char *)res.buf, res.header.len);
+            queue_enqueue2(&c->queue, c->sock, res.header.len);
             continue;
         }
 
         nob_log(WARNING, "Invalid response");
     }
-}
-
-ssize_t recv_exact(int fd, void *buf, int n, int flags) {
-    size_t steps = 0, bytes_readed = 0;
-    for (size_t i = 0; i < n; i += bytes_readed, steps++) {
-        bytes_readed = recv(fd, buf + i, n - i, flags);
-        if (bytes_readed == -1) {
-            if (!(errno == EAGAIN || errno == EWOULDBLOCK))
-                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-            bytes_readed = 0;
-        }
-    }
-    return steps;
 }
 
 int open_cb(void *opaque, void **datap, uint64_t *sizep) {
@@ -442,7 +424,7 @@ int open_cb(void *opaque, void **datap, uint64_t *sizep) {
 ssize_t read_cb(void *opaque, unsigned char *buf, size_t len) {
     Audio_Client *c = (Audio_Client *)opaque;
     Queue *q = &c->queue;
-    return queue_dequeue(q, buf, len);
+    return queue_dequeue2(q, buf, len);
 }
 
 int seek_cb(void *opaque, uint64_t offset) {
