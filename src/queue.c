@@ -3,10 +3,10 @@
 #include <pthread.h>
 #include <stdlib.h>
 
-int queue_init(Queue *q, size_t cap) {
+int queue_init(Queue *q, size_t capacity) {
     *q = (Queue){0};
 
-    if (cap == 0) {
+    if (capacity == 0) {
         nob_log(ERROR, "capacity equals to 0");
         goto err_cap;
     }
@@ -26,10 +26,10 @@ int queue_init(Queue *q, size_t cap) {
         goto err_full;
     }
 
-    q->cap = cap;
-    q->buf = malloc(cap * sizeof(*q->buf));
+    q->capacity = capacity;
+    q->items = malloc(capacity * sizeof(*q->items));
 
-    if (!q->buf) {
+    if (!q->items) {
         nob_log(ERROR, "malloc");
         goto err_malloc;
     }
@@ -48,22 +48,24 @@ err_mu:
     return 0;
 }
 
+size_t queue_count(Queue *q) {
+    size_t count = q->head - q->tail;
+    if (q->head < q->tail)
+        count += q->capacity;
+    return count;
+}
+
 void queue_enqueue(Queue *q, unsigned char *src, size_t len) {
     pthread_mutex_lock(&q->mu);
 
-    while (q->count + len > q->cap && q->is_active) {
+    while (queue_count(q) + len > q->capacity && q->is_active)
         pthread_cond_wait(&q->cond_full, &q->mu);
-    }
 
-    if (!q->is_active) {
-        pthread_mutex_unlock(&q->mu);
-        return;
-    }
-
-    for (size_t i = 0; i < len; i++) {
-        size_t idx = (q->head + q->count) % q->cap;
-        q->count++;
-        q->buf[idx] = src[i];
+    if (q->is_active) {
+        for (size_t i = 0; i < len; i++) {
+            q->items[q->head] = src[i];
+            q->head = (q->head + 1) % q->capacity;
+        }
     }
 
     pthread_cond_broadcast(&q->cond_empty);
@@ -73,33 +75,26 @@ void queue_enqueue(Queue *q, unsigned char *src, size_t len) {
 size_t queue_dequeue(Queue *q, unsigned char *dest, size_t len) {
     pthread_mutex_lock(&q->mu);
 
-    while (q->count == 0 && q->is_active) {
+    while (q->head == q->tail && q->is_active)
         pthread_cond_wait(&q->cond_empty, &q->mu);
-    }
 
-    if (!q->is_active) {
-        pthread_mutex_unlock(&q->mu);
-        return 0;
-    }
-
-    size_t to_read = len < q->count ? len : q->count;
-
-    for (size_t i = 0; i < to_read; i++) {
-        dest[i] = q->buf[q->head];
-        q->head = (q->head + 1) % q->cap;
-        q->count--;
+    size_t i = 0;
+    if (q->is_active) {
+        for (i = 0; i < len && q->head != q->tail; i++) {
+            dest[i] = q->items[q->tail];
+            q->tail = (q->tail + 1) % q->capacity;
+        }
     }
 
     pthread_cond_broadcast(&q->cond_full);
     pthread_mutex_unlock(&q->mu);
-
-    return to_read;
+    return i;
 }
 
 void queue_clear(Queue *q) {
     pthread_mutex_lock(&q->mu);
     q->head = 0;
-    q->count = 0;
+    q->tail = 0;
     pthread_mutex_unlock(&q->mu);
 }
 
@@ -113,7 +108,7 @@ void queue_abort(Queue *q) {
 
 void queue_destroy(Queue *q) {
     pthread_mutex_lock(&q->mu);
-    free(q->buf);
+    free(q->items);
     pthread_mutex_unlock(&q->mu);
     pthread_mutex_destroy(&q->mu);
     pthread_cond_destroy(&q->cond_empty);
