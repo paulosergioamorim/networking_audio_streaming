@@ -213,14 +213,8 @@ int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
     if (s->sock == 0)
         goto err;
 
-    if (fd_set_nonblocking(s->sock) == 0)
-        goto err;
-
     s->timer = timer_realtime_create();
     if (s->timer == 0)
-        goto err;
-
-    if (fd_set_nonblocking(s->timer) == 0)
         goto err;
 
     s->epoll = epoll_create1(0);
@@ -323,7 +317,7 @@ void audio_server_load_audios(Audio_Server *s) {
 
 void audio_server_handle_accept(Audio_Server *s) {
     while (true) {
-        Sock_Fd sock = socket_accept(s->sock);
+        int sock = socket_accept(s->sock);
 
         if (sock <= 0)
             break;

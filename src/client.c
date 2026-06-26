@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
 
             if (fd == c.sock) {
                 if (revents & POLLRDHUP) {
-                    nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+                    nob_log(INFO, "Server has been closed. Exiting...");
                     signaled = 1;
                     break;
                 }
@@ -207,9 +207,6 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 
     c->sock = socket_create_client(server_addr, server_tcp_port);
     if (c->sock == 0)
-        goto err;
-
-    if (fd_set_nonblocking(c->sock) == 0)
         goto err;
 
     if (queue_init(&c->queue, KB(32)) == 0)

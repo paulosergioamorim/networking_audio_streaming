@@ -9,15 +9,20 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 
-Sock_Fd socket_create_server(const char *addr, int port, int backlog) {
+int fd_set_nonblocking(int fd);
+
+int socket_create_server(const char *addr, int port, int backlog) {
     struct sockaddr_in sockaddr = {0};
     /* Step1: create a TCP socket */
-    Sock_Fd sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
+
+    if (fd_set_nonblocking(sock) == 0)
+        goto err;
 
     int opt = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
@@ -56,26 +61,29 @@ err:
     return 0;
 }
 
-Sock_Fd socket_create_client(const char *addr, int port) {
-    Sock_Fd sock = socket(AF_INET, SOCK_STREAM, 0);
+int socket_create_client(const char *addr, int port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err_socket;
     }
 
-    struct sockaddr_in server_sockaddr = {0};
-    server_sockaddr.sin_family = AF_INET;
-    server_sockaddr.sin_port = htons(port);
+    if (fd_set_nonblocking(sock) == 0)
+        goto err;
 
-    int ok = inet_pton(AF_INET, addr, &server_sockaddr.sin_addr.s_addr);
+    struct sockaddr_in sockaddr = {0};
+    sockaddr.sin_family = AF_INET;
+    sockaddr.sin_port = htons(port);
+
+    int ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
 
     if (ok <= 0) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
-    if (connect(sock, (struct sockaddr *)&server_sockaddr, sizeof(server_sockaddr)) == -1) {
+    if (connect(sock, (struct sockaddr *)&sockaddr, sizeof(sockaddr)) == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
@@ -88,8 +96,8 @@ err_socket:
     return 0;
 }
 
-Sock_Fd socket_accept(Fd socket) {
-    Sock_Fd sock = accept4(socket, NULL, NULL, SOCK_NONBLOCK);
+int socket_accept(int socket) {
+    int sock = accept4(socket, NULL, NULL, SOCK_NONBLOCK);
 
     if (sock == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -103,7 +111,7 @@ Sock_Fd socket_accept(Fd socket) {
     return sock;
 }
 
-int fd_set_nonblocking(Fd fd) {
+int fd_set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
@@ -117,7 +125,7 @@ int fd_set_nonblocking(Fd fd) {
     return 1;
 }
 
-int epoll_add_fd(Fd epoll, int fd, uint32_t events) {
+int epoll_add_fd(int epoll, int fd, uint32_t events) {
     struct epoll_event ev = {
         .data.fd = fd,
         .events = events,
@@ -129,7 +137,7 @@ int epoll_add_fd(Fd epoll, int fd, uint32_t events) {
     return 1;
 }
 
-int epoll_del_fd(Fd epoll, int fd) {
+int epoll_del_fd(int epoll, int fd) {
     if (epoll_ctl(epoll, EPOLL_CTL_DEL, fd, NULL) == -1) {
         nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         return 0;
@@ -137,7 +145,7 @@ int epoll_del_fd(Fd epoll, int fd) {
     return 1;
 }
 
-int epoll_mod_fd(Fd epoll, int fd, uint32_t events) {
+int epoll_mod_fd(int epoll, int fd, uint32_t events) {
     struct epoll_event ev = {
         .data.fd = fd,
         .events = events,
@@ -152,16 +160,19 @@ int epoll_mod_fd(Fd epoll, int fd, uint32_t events) {
 int timer_realtime_create() {
     // timer for send streaming packets
     struct itimerspec tspec = {0};
-    int fd = timerfd_create(CLOCK_REALTIME, 0);
+    int timer = timerfd_create(CLOCK_REALTIME, 0);
 
-    if (fd == -1) {
-        nob_log(ERROR, "timerfd_create");
+    if (timer == -1) {
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
+    if (fd_set_nonblocking(timer) == 0)
+        goto err;
+
     struct timespec now;
     if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
-        nob_log(ERROR, "clock_gettime");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
@@ -170,15 +181,15 @@ int timer_realtime_create() {
     tspec.it_value.tv_sec = now.tv_sec;
     tspec.it_value.tv_nsec = now.tv_nsec;
 
-    if (timerfd_settime(fd, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
-        nob_log(ERROR, "timerfd_settime");
+    if (timerfd_settime(timer, TFD_TIMER_ABSTIME, &tspec, NULL) == -1) {
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
-    return fd;
+    return timer;
 
 err:
-    if (fd > 0)
-        close(fd);
+    if (timer > 0)
+        close(timer);
     return 0;
 }
