@@ -162,8 +162,8 @@ int main(int argc, char **argv) {
                 req.header.kind = kind;
 
                 if (kind == KIND_START) {
-                    char *idx_str = prompt + sizeof("/start ") - 1;
-                    long idx = atol(idx_str);
+                    const char *idx_str = prompt + sizeof("/start ") - 1;
+                    ptrdiff_t idx = atol(idx_str);
                     if (idx <= 0) {
                         printf("Invalid audio index\n");
                         continue;
@@ -214,21 +214,21 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     c->vlc_instance = libvlc_new(1, args);
 
     if (!c->vlc_instance) {
-        nob_log(ERROR, "libvlc_new");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
     libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
 
     if (!vlc_media) {
-        nob_log(ERROR, "libvlc_media_new_callbacks");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
     c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
 
     if (!c->vlc_mp) {
-        nob_log(ERROR, "libvlc_media_player_new_from_media");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
@@ -369,7 +369,7 @@ void audio_client_handle_response(Audio_Client *c) {
             bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
 
             if (bytes_readed == -1) {
-                nob_log(ERROR, "recv");
+                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
                 continue;
             }
 
@@ -428,8 +428,11 @@ ssize_t read_cb(void *opaque, unsigned char *buf, size_t len) {
 }
 
 int seek_cb(void *opaque, uint64_t offset) {
+    NOB_UNUSED(opaque);
+    NOB_UNUSED(offset);
     return -1;
 }
 
 void close_cb(void *opaque) {
+    NOB_UNUSED(opaque);
 }

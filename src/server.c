@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -130,7 +131,7 @@ int main(int argc, char **argv) {
         }
 
         if (N == -1) {
-            nob_log(ERROR, "epoll_wait");
+            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
             audio_server_destroy(&s);
             return 1;
         }
@@ -279,14 +280,14 @@ void audio_server_load_audios(Audio_Server *s) {
         int fd = open(path, O_RDONLY);
 
         if (fd == -1) {
-            nob_log(ERROR, "open");
+            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
             continue;
         }
 
         struct stat st = {0};
 
         if (fstat(fd, &st) == -1) {
-            nob_log(ERROR, "fstat");
+            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
             close(fd);
             continue;
         }
@@ -294,7 +295,7 @@ void audio_server_load_audios(Audio_Server *s) {
         void *buf = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
 
         if (buf == MAP_FAILED) {
-            nob_log(ERROR, "mmap");
+            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
             close(fd);
             continue;
         }
@@ -351,6 +352,8 @@ void audio_server_handle_exit(Audio_Server *s, int event_sock) {
 }
 
 void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    NOB_UNUSED(req);
+    NOB_UNUSED(res);
     nob_log(INFO, "Client request /list");
 
     Response_Header header_end = {
@@ -391,13 +394,13 @@ void audio_server_handle_list(Audio_Server *s, int event_sock, Request *req, Res
 void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Response *res) {
     nob_log(INFO, "Client request /start");
     res->header.kind = KIND_START;
-    size_t idx = req->buf - 1;
+    ptrdiff_t idx = req->buf - 1;
 
-    if (!(0 <= idx && idx < arrlen(s->audios))) {
+    if (idx >= arrlen(s->audios)) {
         res->header.code = STATUS_ERR_NO_FILE;
         ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
         if (bytes_written == -1) {
-            nob_log(ERROR, "send");
+            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         }
         return;
     }
@@ -407,29 +410,31 @@ void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Re
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
     if (bytes_written == -1) {
-        nob_log(ERROR, "send");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
     }
 }
 
 void audio_server_handle_stop(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    NOB_UNUSED(req);
     nob_log(INFO, "Client request /stop");
     audio_server_client_unset_streaming(s, event_sock);
     res->header.kind = KIND_STOP;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
     if (bytes_written == -1) {
-        nob_log(ERROR, "send");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
     }
 }
 
 void audio_server_handle_resume(Audio_Server *s, int event_sock, Request *req, Response *res) {
+    NOB_UNUSED(req);
     nob_log(INFO, "Client request /resume");
     audio_server_client_set_streaming(s, event_sock, -1);
     res->header.kind = KIND_RESUME;
     res->header.code = STATUS_OK;
     ssize_t bytes_written = send(event_sock, &res->header, sizeof(res->header), 0);
     if (bytes_written == -1) {
-        nob_log(ERROR, "send");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
     }
 }
 
@@ -472,9 +477,9 @@ void audio_server_client_unset_streaming(Audio_Server *s, int key) {
 
 void audio2_destroy(Audio2 *a) {
     if (munmap(a->buf, a->file_size) == -1)
-        nob_log(ERROR, "munmap");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
     if (close(a->fd) == -1)
-        nob_log(ERROR, "close");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
 }
 
 void audio_server_handle_request(Audio_Server *s, int event_sock) {
@@ -489,7 +494,7 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
             nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         }
 
-        if (bytes_readed < sizeof(req))
+        if (bytes_readed < (ssize_t)sizeof(req))
             nob_log(WARNING, "Parcial read");
 
         if (bytes_readed == 0) {
@@ -518,6 +523,7 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
 }
 
 void audio_server_handle_timer(Audio_Server *s, int timerfd) {
+    NOB_UNUSED(timerfd);
     while (true) {
         uint64_t expdir;
         ssize_t bytes_readed = read(s->timer, &expdir, sizeof(expdir));
@@ -528,7 +534,7 @@ void audio_server_handle_timer(Audio_Server *s, int timerfd) {
             nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         }
 
-        for (size_t i = 0; i < hmlen(s->active_clients); i++) {
+        for (ptrdiff_t i = 0; i < hmlen(s->active_clients); i++) {
             int key = s->active_clients[i].key;
             ptrdiff_t idx = hmgeti(s->clients, key);
             if (idx == -1)
