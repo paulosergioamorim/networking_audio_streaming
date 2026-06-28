@@ -7,24 +7,20 @@
 
 #define TRACE_FMT "%s:%d %s() [%s] %s"
 #define TRACE_ARG __FILE__, __LINE__, __FUNCTION__, strerrorname_np(errno), strerror(errno)
-
-typedef int Epoll_Fd;
-typedef int Sock_Fd;
+#define min(a, b) (((a) < (b)) ? a : b)
 
 int timer_realtime_create();
 
-Sock_Fd socket_create_server(const char *addr, int port, int backlog);
+int socket_create_server(const char *addr, int port, int backlog);
 
-Sock_Fd socket_create_client(const char *addr, int port);
+int socket_create_client(const char *addr, int port);
 
-Sock_Fd socket_accept(Sock_Fd socket);
+int socket_accept(int sockfd);
 
-int fd_set_nonblocking(int fd);
+int epoll_add_fd(int epollfd, int fd, uint32_t events);
 
-int epoll_add_fd(Epoll_Fd epoll, int fd, uint32_t events);
+int epoll_del_fd(int epollfd, int fd);
 
-int epoll_del_fd(Epoll_Fd epoll, int fd);
-
-int epoll_mod_fd(Epoll_Fd epoll, int fd, uint32_t events);
+int epoll_mod_fd(int epollfd, int fd, uint32_t events);
 
 #endif /* ifndef UTILS_H */

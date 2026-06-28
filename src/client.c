@@ -8,10 +8,10 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vlc/vlc.h>
@@ -34,7 +34,7 @@
      "| /resume       -> resume streaming     |\n"                                                                     \
      "| /exit or ^C   -> to exit              |\n"                                                                     \
      "|=======================================|\n")
-#define LIST_LINE_HORIZONTAL ("|----------------------------------------------------------------------------------|\n")
+#define LIST_LINE_HORIZONTAL ("|===================================================================================|\n")
 
 typedef struct {
     unsigned long min_us;
@@ -44,41 +44,29 @@ typedef struct {
 } Delay_Stats;
 
 typedef struct {
-    Epoll_Fd epoll;
-    Sock_Fd sock;
     libvlc_instance_t *vlc_instance;
     libvlc_media_player_t *vlc_mp;
+    Delay_Stats stats;
     Queue queue;
+    int sock;
     bool kind_list_start;
     bool is_playing;
     bool has_playered;
-    Delay_Stats stats;
 } Audio_Client;
 
-int open_cb(void *opaque, void **datap, uint64_t *sizep) {
-    *datap = opaque;
-    *sizep = UINT64_MAX;
-    return 0;
-}
+int open_cb(void *opaque, void **datap, uint64_t *sizep);
 
-ssize_t read_cb(void *opaque, unsigned char *buf, size_t len) {
-    Audio_Client *c = (Audio_Client *)opaque;
-    Queue *q = &c->queue;
-    return queue_dequeue(q, buf, len);
-}
+ssize_t read_cb(void *opaque, unsigned char *buf, size_t len);
 
-int seek_cb(void *opaque, uint64_t offset) {
-    return -1;
-}
+int seek_cb(void *opaque, uint64_t offset);
 
-void close_cb(void *opaque) {
-}
+void close_cb(void *opaque);
 
 void audio_client_stats_reset(Audio_Client *s);
 
 void audio_client_stats_update(Audio_Client *s, Response *res);
 
-void audio_client_stats_print(const Delay_Stats *s);
+void audio_client_stats_print(Audio_Client *c);
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port);
 
@@ -121,72 +109,61 @@ int main(int argc, char **argv) {
 
     printf("/help for more info\n");
 
-    const int MAX_EVENTS = 10;
-    int N = 0;
-    struct epoll_event events[MAX_EVENTS];
+    int nfds = 2;
+    struct pollfd pollfds[] = {
+        (struct pollfd){.fd = STDIN_FILENO, .events = POLLIN},
+        (struct pollfd){.fd = c.sock, .events = POLLIN | POLLRDHUP},
+    };
 
     while (!signaled) {
-        N = epoll_wait(c.epoll, events, MAX_EVENTS, -1);
-
-        if (N & EINTR) {
-            continue;
-        }
-
-        if (N == -1) {
-            nob_log(ERROR, "epoll_wait");
+        // use poll for suport regular files as standard input
+        if (poll(pollfds, nfds, -1) == -1 && errno != EINTR) {
+            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
             audio_client_destroy(&c);
             return 1;
         }
 
-        for (int i = 0; i < N; i++) {
-            uint32_t event_mask = events[i].events;
-            int event_sock = events[i].data.fd;
+        for (int i = 0; i < nfds; i++) {
+            int revents = pollfds[i].revents;
+            if (!revents)
+                continue;
+            int fd = pollfds[i].fd;
 
-            if (event_sock == STDIN_FILENO && event_mask & EPOLLIN) {
+            if (fd == STDIN_FILENO && revents & POLLIN) {
                 char prompt[NAME_MAX] = {0};
-                read(STDIN_FILENO, prompt, sizeof(prompt));
-                char *ptr = strchr(prompt, '\n');
-
-                if (ptr) {
-                    *ptr = '\0';
-                }
-                if (*prompt == '\0') {
+                fgets(prompt, sizeof(prompt), stdin);
+                prompt[strcspn(prompt, "\n")] = '\0';
+                if (*prompt == '\0')
                     continue;
-                }
 
                 Message_Kind kind = audio_client_parse_str_to_enum(prompt);
 
-                if (kind == KIND_NONE) {
+                switch (kind) {
+                case KIND_NONE:
                     printf("Invalid command\n");
-                    continue;
-                }
-
-                if (kind == KIND_EXIT) {
+                    break;
+                case KIND_EXIT:
                     signaled = 1;
                     break;
-                }
-
-                if (kind == KIND_HELP) {
+                case KIND_HELP:
                     printf(HELP_MSG);
-                    continue;
-                }
-
-                if (kind == KIND_STATS) {
-                    audio_client_stats_print(&c.stats);
-                    continue;
-                }
-
-                if (kind == KIND_RESET) {
+                    break;
+                case KIND_STATS:
+                    audio_client_stats_print(&c);
+                    break;
+                case KIND_RESET:
                     audio_client_stats_reset(&c);
-                    continue;
+                    break;
+                default:
+                    break;
                 }
 
                 Request req = {0};
                 req.header.kind = kind;
 
                 if (kind == KIND_START) {
-                    char *idx_str = prompt + sizeof("/start ") - 1;
-                    long idx = atol(idx_str);
+                    const char *idx_str = prompt + sizeof("/start ") - 1;
+                    ptrdiff_t idx = atol(idx_str);
                     if (idx <= 0) {
                         printf("Invalid audio index\n");
                         continue;
@@ -201,21 +178,20 @@ int main(int argc, char **argv) {
 
                 ssize_t bytes_written = send(c.sock, &req, sizeof(req), 0);
                 if (bytes_written == -1) {
-                    nob_log(ERROR, "send");
+                    nob_log(ERROR, TRACE_FMT, TRACE_ARG);
                     continue;
                 }
             }
 
-            if (event_sock == c.sock) {
-                if (event_mask & EPOLLRDHUP) {
+            if (fd == c.sock) {
+                if (revents & POLLRDHUP) {
                     nob_log(INFO, "Server has been closed. Exiting...");
                     signaled = 1;
                     break;
                 }
 
-                if (event_mask & EPOLLIN) {
+                if (revents & POLLIN)
                     audio_client_handle_response(&c);
-                }
             }
         }
     }
@@ -231,22 +207,6 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     if (c->sock == 0)
         goto err;
 
-    if (fd_set_nonblocking(c->sock) == 0)
-        goto err;
-
-    c->epoll = epoll_create1(0);
-
-    if (c->epoll == -1) {
-        nob_log(ERROR, "epoll_create1");
-        goto err;
-    }
-
-    if (epoll_add_fd(c->epoll, STDIN_FILENO, EPOLLIN) == 0)
-        goto err;
-
-    if (epoll_add_fd(c->epoll, c->sock, EPOLLRDHUP | EPOLLIN | EPOLLET) == 0)
-        goto err;
-
     if (queue_init(&c->queue, KB(32)) == 0)
         goto err;
 
@@ -254,21 +214,21 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
     c->vlc_instance = libvlc_new(1, args);
 
     if (!c->vlc_instance) {
-        nob_log(ERROR, "libvlc_new");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
     libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
 
     if (!vlc_media) {
-        nob_log(ERROR, "libvlc_media_new_callbacks");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
     c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
 
     if (!c->vlc_mp) {
-        nob_log(ERROR, "libvlc_media_player_new_from_media");
+        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
         goto err;
     }
 
@@ -282,8 +242,6 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
 err:
     if (c->sock > 0)
         close(c->sock);
-    if (c->epoll > 0)
-        close(c->epoll);
     if (c->vlc_instance)
         libvlc_release(c->vlc_instance);
     if (c->vlc_mp)
@@ -305,7 +263,6 @@ void audio_client_destroy(Audio_Client *c) {
 
 void audio_client_handle_exit(Audio_Client *c) {
     close(c->sock);
-    close(c->epoll);
 }
 
 Message_Kind audio_client_parse_str_to_enum(const char *str) {
@@ -339,24 +296,14 @@ Message_Kind audio_client_parse_str_to_enum(const char *str) {
 void audio_client_handle_start(Audio_Client *c) {
     c->is_playing = 0;
     c->has_playered = 1;
-
     // free all libvlc threads
-    pthread_mutex_lock(&c->queue.mu);
-    c->queue.is_active = 0;
-    pthread_cond_broadcast(&c->queue.cond_empty);
-    pthread_mutex_unlock(&c->queue.mu);
-
+    queue_abort(&c->queue);
     // stop the libvlc player
     libvlc_media_player_stop(c->vlc_mp);
-
     // reset the circular queue
     queue_clear(&c->queue);
-
     // activate the queue
-    pthread_mutex_lock(&c->queue.mu);
     c->queue.is_active = 1;
-    pthread_mutex_unlock(&c->queue.mu);
-
     c->is_playing = 1;
     libvlc_media_player_play(c->vlc_mp);
 }
@@ -381,7 +328,8 @@ void audio_client_stats_update(Audio_Client *s, Response *res) {
     s->stats.count++;
 }
 
-void audio_client_stats_print(const Delay_Stats *s) {
+void audio_client_stats_print(Audio_Client *c) {
+    Delay_Stats *s = &c->stats;
     if (s->count == 0) {
         printf("|=======================================|\n"
                "|          No packets received          |\n"
@@ -421,7 +369,7 @@ void audio_client_handle_response(Audio_Client *c) {
             bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
 
             if (bytes_readed == -1) {
-                nob_log(ERROR, "recv");
+                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
                 continue;
             }
 
@@ -430,7 +378,7 @@ void audio_client_handle_response(Audio_Client *c) {
                 c->kind_list_start = 1;
             }
 
-            printf("| %s %*s |\n", res.buf, 80 - (int)res.header.len, " ");
+            printf("| %.*s %*s |\n", (int)res.header.len, res.buf, 80 - (int)res.header.len, " ");
             continue;
         }
 
@@ -459,22 +407,32 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
-
-            if (bytes_readed == -1) {
-                if (!(errno == EAGAIN || errno == EWOULDBLOCK))
-                    continue;
-                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-            }
-
-            if (bytes_readed < res.header.len)
-                nob_log(WARNING, "Parcial read");
-
-            audio_client_stats_update(c, &res);
-            queue_enqueue(&c->queue, (unsigned char *)res.buf, bytes_readed);
+            queue_enqueue2(&c->queue, c->sock, res.header.len);
             continue;
         }
 
         nob_log(WARNING, "Invalid response");
     }
+}
+
+int open_cb(void *opaque, void **datap, uint64_t *sizep) {
+    *datap = opaque;
+    *sizep = UINT64_MAX;
+    return 0;
+}
+
+ssize_t read_cb(void *opaque, unsigned char *buf, size_t len) {
+    Audio_Client *c = (Audio_Client *)opaque;
+    Queue *q = &c->queue;
+    return queue_dequeue2(q, buf, len);
+}
+
+int seek_cb(void *opaque, uint64_t offset) {
+    NOB_UNUSED(opaque);
+    NOB_UNUSED(offset);
+    return -1;
+}
+
+void close_cb(void *opaque) {
+    NOB_UNUSED(opaque);
 }

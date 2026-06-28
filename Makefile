@@ -1,5 +1,5 @@
 CC 		:= gcc
-FLAGS 	:= -D_GNU_SOURCE -Wall
+FLAGS 	:= -D_GNU_SOURCE -Wall -Wextra
 SRC 	:= $(wildcard src/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
 DEP 	:= $(OBJ:.o=.d)

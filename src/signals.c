@@ -7,6 +7,7 @@
 volatile sig_atomic_t signaled;
 
 void SIGINT_HANDLER(int signal) {
+    NOB_UNUSED(signal);
     signaled = 1;
 }
 

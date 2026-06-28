@@ -34,7 +34,7 @@ typedef struct {
 typedef struct {
     Request_Header header;
     // only KIND_START messages use this. buf is the audio index + 1. Because it's small, all messages send it
-    size_t buf;
+    ptrdiff_t buf;
 } Request;
 
 typedef struct {
