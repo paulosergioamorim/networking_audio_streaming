@@ -69,4 +69,4 @@ void queue_abort(Queue *q);
  */
 void queue_destroy(Queue *q);
 
-#endif
+#endif /* end of include guard: _H */

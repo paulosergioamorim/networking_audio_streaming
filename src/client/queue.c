@@ -2,10 +2,12 @@
 /// @author paulosergioamorim
 
 #include "queue.h"
+#include "debug.h"
 #include "nob.h"
-#include "utils.h"
+#include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <sys/poll.h>
 #include <sys/uio.h>
 
 int queue_init(Queue *q, size_t capacity) {
@@ -17,17 +19,17 @@ int queue_init(Queue *q, size_t capacity) {
     }
 
     if (pthread_mutex_init(&q->mu, NULL) == -1) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err_mutext_init;
     }
 
     if (pthread_cond_init(&q->cond_empty, NULL) == -1) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err_cond_empty_init;
     }
 
     if (pthread_cond_init(&q->cond_full, NULL) == -1) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err_cond_full_init;
     }
 
@@ -35,7 +37,7 @@ int queue_init(Queue *q, size_t capacity) {
     q->items = malloc(capacity * sizeof(*q->items));
 
     if (!q->items) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err_malloc;
     }
 
@@ -140,7 +142,14 @@ void queue_enqueue2(Queue *q, int fd, size_t len) {
             if (bytes_readed == -1) {
                 bytes_readed = 0;
                 if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                    nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+                    nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
+                }
+                struct pollfd pollfds[1] = {0};
+                pollfds[0].fd = fd;
+                pollfds[0].events = POLLIN;
+                int nfds = poll(pollfds, 1, -1);
+                if (nfds == -1) {
+                    nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
                 }
             }
             q->head = (q->head + bytes_readed) % q->capacity;
@@ -160,7 +169,7 @@ size_t queue_dequeue2(Queue *q, unsigned char *dest, size_t len) {
 
     size_t to_read = 0;
     if (q->is_active) {
-        to_read = min(q->count, len);
+        to_read = fminf(q->count, len);
         size_t rest_bytes = (q->tail + to_read) % q->capacity;
         if (rest_bytes == q->tail + to_read) {
             memcpy(dest, q->items + q->tail, to_read);

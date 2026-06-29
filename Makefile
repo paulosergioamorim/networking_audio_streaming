@@ -1,6 +1,6 @@
 CC 		:= gcc
-FLAGS 	:= -D_GNU_SOURCE -Wall -Wextra
-SRC 	:= $(wildcard src/*.c)
+FLAGS 	:= -D_GNU_SOURCE -Wall -Wextra -Isrc/lib -Isrc/include -lm
+SRC 	:= $(wildcard src/**/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
 DEP 	:= $(OBJ:.o=.d)
 
@@ -10,22 +10,23 @@ endif
 
 all: server client
 
-objFolder:
-	mkdir -p obj
-
-obj/%.o: src/%.c | objFolder
+obj/%.o: src/%.c
+	@ mkdir -p $(dir $@)
 	$(CC) $< -o $@ -c $(FLAGS) -MMD -MP
 
-server: obj/server.o obj/signals.o obj/suffix.o obj/utils.o
+server: obj/server/main.o obj/signals.o obj/server/suffix.o obj/io.o
 	$(CC) $^ -o $@ $(FLAGS)
 
-client: obj/client.o obj/signals.o obj/queue.o obj/utils.o
+client: obj/client/main.o obj/signals.o obj/client/queue.o obj/io.o
 	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread
 
+compile_commands:
+	bear -- make -B
+
 clean:
-	rm -rf obj server client
+	@ rm -rf obj server client
 
 -include $(DEP)
 
-.PHONY: all clean objFolder
+.PHONY: all clean
 

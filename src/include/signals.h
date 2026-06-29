@@ -5,8 +5,8 @@
 
 extern volatile sig_atomic_t signaled;
 
-void SIGINT_HANDLER(int signal);
+void sigint_handler(int signal);
 
 int signals_sigint_sigaction();
 
-#endif
+#endif /* end of include guard: SIGNALS_H */

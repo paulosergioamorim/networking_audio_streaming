@@ -1,12 +1,12 @@
 #include "signals.h"
+#include "debug.h"
 #include "nob.h"
-#include "utils.h"
 #include <signal.h>
 #include <stddef.h>
 
 volatile sig_atomic_t signaled;
 
-void SIGINT_HANDLER(int signal) {
+void sigint_handler(int signal) {
     NOB_UNUSED(signal);
     signaled = 1;
 }
@@ -14,10 +14,10 @@ void SIGINT_HANDLER(int signal) {
 int signals_sigint_sigaction() {
     struct sigaction sa = {0};
     sa.sa_flags = 0;
-    sa.sa_handler = &SIGINT_HANDLER;
+    sa.sa_handler = &sigint_handler;
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         return 0;
     }
 
