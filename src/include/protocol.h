@@ -1,5 +1,5 @@
-#ifndef PACKETS_H
-#define PACKETS_H
+#ifndef PROTOCOL_H
+#define PROTOCOL_H
 
 #include <linux/limits.h>
 #include <stddef.h>
@@ -51,4 +51,4 @@ typedef struct {
     char buf[RESPONSE_MAX]; // only KIND_LIST and KIND_STREAM use this
 } Response;
 
-#endif
+#endif /* end of include guard: PROTOCOL_H */

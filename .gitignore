@@ -2,6 +2,6 @@
 /obj
 *.o
 *.d
-server
-client
+/server
+/client
 compile_commands.json

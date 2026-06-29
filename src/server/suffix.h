@@ -5,4 +5,4 @@ int suffix_ends_with(const char *str, const char *suffix);
 
 int suffix_is_audio(const char *str);
 
-#endif
+#endif /* end of include guard: _H */

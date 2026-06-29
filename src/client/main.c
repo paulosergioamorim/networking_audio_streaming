@@ -1,19 +1,10 @@
-#include "packets.h"
+#include "debug.h"
+#include "io.h"
+#include "protocol.h"
 #include "queue.h"
 #include "signals.h"
-#include "utils.h"
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <ifaddrs.h>
-#include <limits.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <sys/poll.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #include <vlc/vlc.h>
 
 #define FLAG_IMPLEMENTATION
@@ -49,9 +40,9 @@ typedef struct {
     Delay_Stats stats;
     Queue queue;
     int sock;
-    bool kind_list_start;
-    bool is_playing;
-    bool has_playered;
+    int kind_list_start;
+    int is_playing;
+    int has_playered;
 } Audio_Client;
 
 int open_cb(void *opaque, void **datap, uint64_t *sizep);
@@ -118,23 +109,25 @@ int main(int argc, char **argv) {
     while (!signaled) {
         // use poll for suport regular files as standard input
         if (poll(pollfds, nfds, -1) == -1 && errno != EINTR) {
-            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+            nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
             audio_client_destroy(&c);
             return 1;
         }
 
         for (int i = 0; i < nfds; i++) {
             int revents = pollfds[i].revents;
-            if (!revents)
+            if (!revents) {
                 continue;
+            }
             int fd = pollfds[i].fd;
 
             if (fd == STDIN_FILENO && revents & POLLIN) {
                 char prompt[NAME_MAX] = {0};
                 fgets(prompt, sizeof(prompt), stdin);
                 prompt[strcspn(prompt, "\n")] = '\0';
-                if (*prompt == '\0')
+                if (*prompt == '\0') {
                     continue;
+                }
 
                 Message_Kind kind = audio_client_parse_str_to_enum(prompt);
 
@@ -178,7 +171,7 @@ int main(int argc, char **argv) {
 
                 ssize_t bytes_written = send(c.sock, &req, sizeof(req), 0);
                 if (bytes_written == -1) {
-                    nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+                    nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
                     continue;
                 }
             }
@@ -190,8 +183,9 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                if (revents & POLLIN)
+                if (revents & POLLIN) {
                     audio_client_handle_response(&c);
+                }
             }
         }
     }
@@ -201,53 +195,57 @@ int main(int argc, char **argv) {
 }
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port) {
+    libvlc_media_t *vlc_media = NULL;
     *c = (Audio_Client){0};
 
     c->sock = socket_create_client(server_addr, server_tcp_port);
-    if (c->sock == 0)
-        goto err;
+    if (c->sock == 0) {
+        goto err_sock;
+    }
 
-    if (queue_init(&c->queue, KB(32)) == 0)
-        goto err;
+    if (queue_init(&c->queue, KB(32)) == 0) {
+        goto err_queue;
+    }
 
     const char *args[] = {"--quiet"};
     c->vlc_instance = libvlc_new(1, args);
 
     if (!c->vlc_instance) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-        goto err;
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
+        goto err_vlc_instance;
     }
 
-    libvlc_media_t *vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
+    vlc_media = libvlc_media_new_callbacks(c->vlc_instance, open_cb, read_cb, seek_cb, close_cb, c);
 
     if (!vlc_media) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-        goto err;
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
+        goto err_vlc_media;
     }
 
     c->vlc_mp = libvlc_media_player_new_from_media(vlc_media);
-
-    if (!c->vlc_mp) {
-        nob_log(ERROR, TRACE_FMT, TRACE_ARG);
-        goto err;
-    }
-
     libvlc_media_release(vlc_media);
 
-    if (signals_sigint_sigaction() == 0)
-        goto err;
+    if (!c->vlc_mp) {
+        nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
+        goto err_vlc_mp;
+    }
+
+    if (signals_sigint_sigaction() == 0) {
+        goto err_sigaction;
+    }
 
     return 1;
 
-err:
-    if (c->sock > 0)
-        close(c->sock);
-    if (c->vlc_instance)
-        libvlc_release(c->vlc_instance);
-    if (c->vlc_mp)
-        libvlc_media_player_release(c->vlc_mp);
-    if (c->queue.is_active)
-        queue_destroy(&c->queue);
+err_sigaction:
+err_vlc_mp:
+    libvlc_media_player_release(c->vlc_mp);
+err_vlc_media:
+    libvlc_release(c->vlc_instance);
+err_vlc_instance:
+    queue_destroy(&c->queue);
+err_queue:
+    close(c->sock);
+err_sock:
     return 0;
 }
 
@@ -266,30 +264,21 @@ void audio_client_handle_exit(Audio_Client *c) {
 }
 
 Message_Kind audio_client_parse_str_to_enum(const char *str) {
-    if (strcmp(str, "/list") == 0) {
-        return KIND_LIST;
+#define COMMANDS                                                                                                       \
+    X(KIND_LIST, "/list", sizeof("/list"))                                                                             \
+    X(KIND_START, "/start ", sizeof("/start"))                                                                         \
+    X(KIND_STOP, "/stop", sizeof("/stop"))                                                                             \
+    X(KIND_RESUME, "/resume", sizeof("/resume"))                                                                       \
+    X(KIND_EXIT, "/exit", sizeof("/exit"))                                                                             \
+    X(KIND_HELP, "/help", sizeof("/help"))                                                                             \
+    X(KIND_STATS, "/stats", sizeof("/stats"))                                                                          \
+    X(KIND_RESET, "/reset", sizeof("/reset"))
+#define X(kind, match, len)                                                                                            \
+    if (strncmp(str, match, len) == 0) {                                                                               \
+        return kind;                                                                                                   \
     }
-    if (strncmp(str, "/start", 6) == 0) {
-        return KIND_START;
-    }
-    if (strcmp(str, "/stop") == 0) {
-        return KIND_STOP;
-    }
-    if (strcmp(str, "/resume") == 0) {
-        return KIND_RESUME;
-    }
-    if (strcmp(str, "/exit") == 0) {
-        return KIND_EXIT;
-    }
-    if (strcmp(str, "/help") == 0) {
-        return KIND_HELP;
-    }
-    if (strcmp(str, "/stats") == 0) {
-        return KIND_STATS;
-    }
-    if (strcmp(str, "/reset") == 0) {
-        return KIND_RESET;
-    }
+    COMMANDS
+#undef X
     return KIND_NONE;
 }
 
@@ -346,19 +335,21 @@ void audio_client_stats_print(Audio_Client *c) {
 }
 
 void audio_client_handle_response(Audio_Client *c) {
-    while (true) {
+    while (1) {
         Response res = {0};
         ssize_t bytes_readed = recv(c->sock, &res.header, sizeof(res.header), 0);
         Message_Kind kind = res.header.kind;
 
         if (bytes_readed == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
-            nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+            }
+            nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         }
 
-        if (bytes_readed == 0)
+        if (bytes_readed == 0) {
             break;
+        }
 
         if (kind == KIND_LIST) {
             if (res.header.code == STATUS_LIST_END) {
@@ -369,7 +360,7 @@ void audio_client_handle_response(Audio_Client *c) {
             bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
 
             if (bytes_readed == -1) {
-                nob_log(ERROR, TRACE_FMT, TRACE_ARG);
+                nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
                 continue;
             }
 
