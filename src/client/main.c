@@ -136,8 +136,7 @@ int main(int argc, char **argv) {
                     printf("Invalid command\n");
                     break;
                 case KIND_EXIT:
-                    signaled = 1;
-                    break;
+                    goto exit;
                 case KIND_HELP:
                     printf(HELP_MSG);
                     break;
@@ -190,6 +189,7 @@ int main(int argc, char **argv) {
         }
     }
 
+exit:
     audio_client_destroy(&c);
     return 0;
 }
