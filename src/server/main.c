@@ -132,10 +132,14 @@ int main(int argc, char **argv) {
             uint32_t event_mask = events[i].events;
             int eventfd = events[i].data.fd;
 
-            if (eventfd == s.sock && event_mask & EPOLLIN) {
-                audio_server_handle_accept(&s);
-            } else if (eventfd == s.timer && event_mask & EPOLLIN) {
-                audio_server_handle_timer(&s);
+            if (eventfd == s.sock) {
+                if (event_mask & EPOLLIN) {
+                    audio_server_handle_accept(&s);
+                }
+            } else if (eventfd == s.timer) {
+                if (event_mask & EPOLLIN) {
+                    audio_server_handle_timer(&s);
+                }
             } else if (event_mask & EPOLLRDHUP) {
                 audio_server_handle_exit(&s, eventfd);
             } else if (event_mask & EPOLLIN) {
@@ -480,20 +484,15 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
         Response res = {0};
         ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), 0);
 
-        if (bytes_readed == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return;
-            }
-            nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
-        }
-
-        if (bytes_readed < (ssize_t)sizeof(req)) {
-            nob_log(WARNING, "Parcial read");
-        }
-
         if (bytes_readed == 0) {
             req.header.kind = KIND_EXIT;
-            break;
+        } else if (bytes_readed == -1) {
+            if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
+                nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
+            }
+            return;
+        } else if (bytes_readed < (ssize_t)sizeof(req)) {
+            nob_log(WARNING, "Parcial read"); // TODO: make this better :)
         }
 
 #define REQUEST_HANDLERS                                                                                               \
@@ -502,7 +501,6 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
     X(KIND_START, audio_server_handle_start, s, event_sock, &req, &res)                                                \
     X(KIND_STOP, audio_server_handle_stop, s, event_sock, &res)                                                        \
     X(KIND_RESUME, audio_server_handle_resume, s, event_sock, &res)
-
         switch (req.header.kind) {
 #define X(kind, handler, ...)                                                                                          \
     case kind:                                                                                                         \
