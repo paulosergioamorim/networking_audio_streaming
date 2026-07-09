@@ -1,5 +1,5 @@
-CC 		:= gcc
-FLAGS 	:= -D_GNU_SOURCE -Wall -Wextra -Isrc/lib -Isrc/include -lm
+CC 	:= gcc
+FLAGS 	:= -D_GNU_SOURCE -Wall -Wextra -Isrc/lib -Isrc/include
 SRC 	:= $(wildcard src/**/*.c)
 OBJ 	:= $(SRC:src/%.c=obj/%.o)
 DEP 	:= $(OBJ:.o=.d)
@@ -14,10 +14,10 @@ obj/%.o: src/%.c
 	@ mkdir -p $(dir $@)
 	$(CC) $< -o $@ -c $(FLAGS) -MMD -MP
 
-server: obj/server/main.o obj/signals.o obj/server/suffix.o obj/io.o
+server: obj/server/main.o obj/server/suffix.o obj/io.o
 	$(CC) $^ -o $@ $(FLAGS)
 
-client: obj/client/main.o obj/signals.o obj/client/queue.o obj/io.o
+client: obj/client/main.o obj/client/queue.o obj/io.o
 	$(CC) $^ -o $@ $(FLAGS) -lvlc -lpthread
 
 compile_commands:

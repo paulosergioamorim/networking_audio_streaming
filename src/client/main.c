@@ -3,8 +3,11 @@
 #include "protocol.h"
 #include "queue.h"
 #include "signals.h"
+#include <errno.h>
+#include <signal.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <vlc/vlc.h>
 
 #define FLAG_IMPLEMENTATION
@@ -17,7 +20,7 @@
 #define HELP_MSG                                                                                                       \
     ("|=======================================|\n"                                                                     \
      "| /help         -> more info            |\n"                                                                     \
-     "| /list         -> list avaliable songs |\n"                                                                     \
+     "| /list         -> list available songs |\n"                                                                     \
      "| /start <idx>  -> start streaming file |\n"                                                                     \
      "| /stats        -> show metrics         |\n"                                                                     \
      "| /stop         -> stop streaming       |\n"                                                                     \
@@ -82,7 +85,7 @@ int main(int argc, char **argv) {
 
     bool *help = flag_bool("help", false, "Print this help");
     char **ipaddr = flag_str("ipaddr", "0.0.0.0", "Provide the server IP Address");
-    int *port = (int *)flag_uint64("port", 8000, "Provide the server PORT");
+    uint64_t *port = flag_uint64("port", 8000, "Provide the server PORT");
 
     if (!flag_parse(argc, argv)) {
         audio_client_display_usage(stderr);
@@ -106,16 +109,26 @@ int main(int argc, char **argv) {
         (struct pollfd){.fd = c.sock, .events = POLLIN | POLLRDHUP},
     };
 
-    while (!signaled) {
+    sigset_t mask = {0};
+    sigfillset(&mask);
+    sigdelset(&mask, SIGINT);
+
+    while (1) {
         // use poll for suport regular files as standard input
-        if (poll(pollfds, nfds, -1) == -1 && errno != EINTR) {
+        int readyfds = ppoll(pollfds, nfds, NULL, &mask);
+
+        if (readyfds == -1 && errno == EINTR) {
+            break;
+        }
+
+        if (readyfds == -1) {
             nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
             audio_client_destroy(&c);
             return 1;
         }
 
         for (int i = 0; i < nfds; i++) {
-            int revents = pollfds[i].revents;
+            short revents = pollfds[i].revents;
             if (!revents) {
                 continue;
             }
@@ -154,13 +167,12 @@ int main(int argc, char **argv) {
                 req.header.kind = kind;
 
                 if (kind == KIND_START) {
-                    const char *idx_str = prompt + sizeof("/start ") - 1;
-                    ptrdiff_t idx = atol(idx_str);
-                    if (idx <= 0) {
+                    int idx = 0;
+                    if (sscanf(prompt, "/start %d", &idx) != 1 || idx <= 0) {
                         printf("Invalid audio index\n");
                         continue;
                     }
-                    req.buf = idx;
+                    req.buf = htonl(idx);
                 }
 
                 if ((kind == KIND_STOP && c.is_playing == 0) ||
@@ -178,10 +190,8 @@ int main(int argc, char **argv) {
             if (fd == c.sock) {
                 if (revents & POLLRDHUP) {
                     nob_log(INFO, "Server has been closed. Exiting...");
-                    signaled = 1;
-                    break;
+                    goto exit;
                 }
-
                 if (revents & POLLIN) {
                     audio_client_handle_response(&c);
                 }
@@ -197,6 +207,14 @@ exit:
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port) {
     libvlc_media_t *vlc_media = NULL;
     *c = (Audio_Client){0};
+
+    struct sigaction sa = {
+        .sa_handler = &sigint_handler,
+    };
+
+    if (sigaction(SIGINT, &sa, NULL) == -1) {
+        goto err_sigaction;
+    }
 
     c->sock = socket_create_client(server_addr, server_tcp_port);
     if (c->sock == 0) {
@@ -230,13 +248,8 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
         goto err_vlc_mp;
     }
 
-    if (signals_sigint_sigaction() == 0) {
-        goto err_sigaction;
-    }
-
     return 1;
 
-err_sigaction:
 err_vlc_mp:
     libvlc_media_player_release(c->vlc_mp);
 err_vlc_media:
@@ -246,6 +259,7 @@ err_vlc_instance:
 err_queue:
     close(c->sock);
 err_sock:
+err_sigaction:
     return 0;
 }
 
@@ -357,7 +371,7 @@ void audio_client_handle_response(Audio_Client *c) {
                 c->kind_list_start = 0;
                 continue;
             }
-            bytes_readed = recv(c->sock, res.buf, res.header.len, 0);
+            bytes_readed = recv(c->sock, res.data, res.header.len, 0);
 
             if (bytes_readed == -1) {
                 nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
@@ -369,7 +383,7 @@ void audio_client_handle_response(Audio_Client *c) {
                 c->kind_list_start = 1;
             }
 
-            printf("| %.*s %*s |\n", (int)res.header.len, res.buf, 80 - (int)res.header.len, " ");
+            printf("| %.*s %*s |\n", res.header.len, res.data, 80 - res.header.len, " ");
             continue;
         }
 
@@ -398,7 +412,8 @@ void audio_client_handle_response(Audio_Client *c) {
         }
 
         if (kind == KIND_STREAM) {
-            queue_enqueue2(&c->queue, c->sock, res.header.len);
+            queue_enqueue2(&c->queue, c->sock, ntohl(res.header.len));
+            audio_client_stats_update(c, &res);
             continue;
         }
 

@@ -1,8 +1,11 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+#include <arpa/inet.h>
 #include <linux/limits.h>
+#include <netinet/in.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/time.h>
 
 typedef enum {
@@ -28,27 +31,38 @@ typedef enum {
 } Status_Code;
 
 typedef struct {
-    Message_Kind kind;
+    int8_t kind;
 } Request_Header;
 
 typedef struct {
     Request_Header header;
     // only KIND_START messages use this. buf is the audio index + 1. Because it's small, all messages send it
-    ptrdiff_t buf;
+    int32_t buf;
 } Request;
 
 typedef struct {
-    Message_Kind kind;
-    Status_Code code;
+    int8_t kind;
+    int8_t code;
     struct timeval tv;
-    size_t len; // the lenght of 'buf'
+    uint32_t len;
 } Response_Header;
 
 #define RESPONSE_MAX 1600
 
 typedef struct {
     Response_Header header;
-    char buf[RESPONSE_MAX]; // only KIND_LIST and KIND_STREAM use this
+    uint8_t data[RESPONSE_MAX]; // only KIND_LIST and KIND_STREAM use this
 } Response;
+
+static inline Response_Header response_header_build(Message_Kind kind, Status_Code code, uint32_t len) {
+    struct timeval tv = {0};
+    gettimeofday(&tv, NULL);
+    return (Response_Header){
+        .kind = kind,
+        .code = code,
+        .tv = tv,
+        .len = htonl(len),
+    };
+}
 
 #endif /* end of include guard: PROTOCOL_H */

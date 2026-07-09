@@ -4,7 +4,6 @@
 #include "queue.h"
 #include "debug.h"
 #include "nob.h"
-#include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/poll.h>
@@ -147,10 +146,15 @@ void queue_enqueue2(Queue *q, int fd, size_t len) {
                 struct pollfd pollfds[1] = {0};
                 pollfds[0].fd = fd;
                 pollfds[0].events = POLLIN;
+                q->head = (q->head + bytes_readed) % q->capacity;
+                q->count += bytes_readed;
+                pthread_mutex_lock(&q->mu);
                 int nfds = poll(pollfds, 1, -1);
                 if (nfds == -1) {
                     nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
                 }
+                pthread_mutex_unlock(&q->mu);
+                continue;
             }
             q->head = (q->head + bytes_readed) % q->capacity;
             q->count += bytes_readed;
@@ -169,7 +173,10 @@ size_t queue_dequeue2(Queue *q, unsigned char *dest, size_t len) {
 
     size_t to_read = 0;
     if (q->is_active) {
-        to_read = fminf(q->count, len);
+        to_read = len;
+        if (to_read > q->count) {
+            to_read = q->count;
+        }
         size_t rest_bytes = (q->tail + to_read) % q->capacity;
         if (rest_bytes == q->tail + to_read) {
             memcpy(dest, q->items + q->tail, to_read);

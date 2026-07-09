@@ -3,7 +3,7 @@
 #include "protocol.h"
 #include "signals.h"
 #include "suffix.h"
-#include <math.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -19,7 +19,7 @@
 
 typedef struct {
     size_t offset;
-    ptrdiff_t audio_idx;
+    int audio_idx;
     int sock;
 } Client;
 
@@ -41,7 +41,7 @@ typedef struct {
     int display_name_len;   // strlen(display_name)
     int fd;                 // file descriptor
     size_t file_size;       // the file size
-    char display_name[279]; // [idx] basename
+    char display_name[279]; // idx + basename
 } Audio2;
 
 typedef struct {
@@ -55,7 +55,7 @@ typedef struct {
 
 void audio_server_transmit_packet(Audio_Server *s, Client *c);
 
-int audio_server_init(Audio_Server *s, const char *addr, int tcp_port);
+int audio_server_init(Audio_Server *s, const char *addr, int port);
 
 void audio_server_load_audios(Audio_Server *s);
 
@@ -114,12 +114,15 @@ int main(int argc, char **argv) {
 
     int MAX_EVENTS = 64;
     struct epoll_event events[MAX_EVENTS];
+    sigset_t mask = {0};
+    sigfillset(&mask);
+    sigdelset(&mask, SIGINT);
 
-    while (!signaled) {
-        int N = epoll_wait(s.epoll, events, MAX_EVENTS, -1);
+    while (1) {
+        int N = epoll_pwait(s.epoll, events, MAX_EVENTS, -1, &mask);
 
         if (N == -1 && errno == EINTR) {
-            continue;
+            break;
         }
 
         if (N == -1) {
@@ -157,7 +160,10 @@ void audio_server_transmit_packet(Audio_Server *s, Client *c) {
     Response res = {0};
     int sock = c->sock;
     Audio2 *audio = &s->audios[c->audio_idx];
-    size_t nbytes = fminf(sizeof(res.buf), audio->file_size - c->offset);
+    size_t nbytes = audio->file_size - c->offset;
+    if (nbytes > sizeof(res.data)) {
+        nbytes = sizeof(res.data);
+    }
 
     if (nbytes == 0) {
         nob_log(INFO, "Client %d end streaming", sock);
@@ -167,13 +173,7 @@ void audio_server_transmit_packet(Audio_Server *s, Client *c) {
         return;
     }
 
-    res.header = (Response_Header){
-        .kind = KIND_STREAM,
-        .code = STATUS_OK,
-        .len = nbytes,
-    };
-    gettimeofday(&res.header.tv, NULL);
-
+    res.header = response_header_build(KIND_STREAM, STATUS_OK, nbytes);
     int n = 2;
     struct msghdr msg = {0};
     struct iovec vec[n];
@@ -191,47 +191,56 @@ void audio_server_transmit_packet(Audio_Server *s, Client *c) {
         return;
     }
 
-    if (bytes_written - sizeof(res.header) < res.header.len) {
-        nob_log(WARNING, "Parcial write");
+    if (bytes_written - sizeof(res.header) < nbytes) {
+        nob_log(WARNING, "Partial write");
         return;
     }
 
     c->offset += -sizeof(res.header) + bytes_written;
 }
 
-int audio_server_init(Audio_Server *s, const char *addr, int tcp_port) {
+int audio_server_init(Audio_Server *s, const char *addr, int port) {
     *s = (Audio_Server){0};
 
-    if (signals_sigint_sigaction() == 0)
-        goto err;
+    struct sigaction sa = {
+        .sa_handler = &sigint_handler,
+    };
 
-    s->sock = socket_create_server(addr, tcp_port, BACKLOG);
-    if (s->sock == 0)
-        goto err;
+    if (sigaction(SIGINT, &sa, NULL) == -1) {
+        goto err_sigaction;
+    }
+
+    s->sock = socket_create_server(addr, port, BACKLOG);
+    if (s->sock == 0) {
+        goto err_sock;
+    }
 
     s->timer = timer_realtime_create(0, 100000000);
-    if (s->timer == 0)
-        goto err;
+    if (s->timer == 0) {
+        goto err_timer;
+    }
 
     s->epoll = epoll_create1(0);
     if (s->epoll == -1) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
-        goto err;
+        goto err_epoll;
     }
 
-    if (epoll_add_fd(s->epoll, s->sock, EPOLLIN | EPOLLET) == 0)
-        goto err;
+    if (epoll_add_fd(s->epoll, s->sock, EPOLLIN | EPOLLET) == 0) {
+        goto err_epoll_add;
+    }
 
     audio_server_load_audios(s);
     return 1;
 
-err:
-    if (s->sock > 0)
-        close(s->sock);
-    if (s->timer > 0)
-        close(s->timer);
-    if (s->epoll > 0)
-        close(s->epoll);
+err_epoll_add:
+    close(s->epoll);
+err_epoll:
+    close(s->timer);
+err_timer:
+    close(s->sock);
+err_sock:
+err_sigaction:
     return 0;
 }
 
@@ -330,7 +339,7 @@ void audio_server_handle_accept(Audio_Server *s) {
 }
 
 void audio_server_handle_exit(Audio_Server *s, int event_sock) {
-    ptrdiff_t idx = hmgeti(s->clients, event_sock);
+    int idx = hmgeti(s->clients, event_sock);
 
     if (idx == -1) {
         nob_log(WARNING, "Invalid client index");
@@ -389,7 +398,7 @@ void audio_server_handle_list(Audio_Server *s, int event_sock) {
 void audio_server_handle_start(Audio_Server *s, int event_sock, Request *req, Response *res) {
     nob_log(INFO, "Client request /start");
     res->header.kind = KIND_START;
-    ptrdiff_t idx = req->buf - 1;
+    int idx = ntohl(req->buf) - 1;
 
     if (idx >= arrlen(s->audios)) {
         res->header.code = STATUS_ERR_NO_FILE;
@@ -432,7 +441,7 @@ void audio_server_handle_resume(Audio_Server *s, int event_sock, Response *res) 
 }
 
 void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) {
-    ptrdiff_t idx = hmgeti(s->active_clients, key);
+    int idx = hmgeti(s->active_clients, key);
 
     if (idx == -1) {
         hmput(s->active_clients, key, (None){});
@@ -457,7 +466,7 @@ void audio_server_client_set_streaming(Audio_Server *s, int key, int audio_idx) 
 }
 
 void audio_server_client_unset_streaming(Audio_Server *s, int key) {
-    ptrdiff_t idx = hmgeti(s->active_clients, key);
+    int idx = hmgeti(s->active_clients, key);
 
     if (idx >= 0) {
 #pragma GCC diagnostic push
@@ -492,7 +501,7 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
             }
             return;
         } else if (bytes_readed < (ssize_t)sizeof(req)) {
-            nob_log(WARNING, "Parcial read"); // TODO: make this better :)
+            nob_log(WARNING, "Partial read"); // TODO: make this better :)
         }
 
 #define REQUEST_HANDLERS                                                                                               \
@@ -527,9 +536,9 @@ void audio_server_handle_timer(Audio_Server *s) {
             nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         }
 
-        for (ptrdiff_t i = 0; i < hmlen(s->active_clients); i++) {
+        for (int i = 0; i < hmlen(s->active_clients); i++) {
             int key = s->active_clients[i].key;
-            ptrdiff_t idx = hmgeti(s->clients, key);
+            int idx = hmgeti(s->clients, key);
             if (idx == -1) {
                 continue;
             }

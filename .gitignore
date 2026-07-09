@@ -1,4 +1,5 @@
 /audios
+/pcap
 /obj
 *.o
 *.d
