@@ -202,9 +202,8 @@ void audio_server_transmit_packet(Audio_Server *s, Client *c) {
 int audio_server_init(Audio_Server *s, const char *addr, int port) {
     *s = (Audio_Server){0};
 
-    struct sigaction sa = {
-        .sa_handler = &sigint_handler,
-    };
+    struct sigaction sa = {0};
+    sa.sa_handler = &sigint_handler;
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
         goto err_sigaction;
@@ -377,7 +376,7 @@ void audio_server_handle_list(Audio_Server *s, int event_sock) {
         headers[i] = (Response_Header){
             .kind = KIND_LIST,
             .code = STATUS_LIST_CONTINUE,
-            .len = s->audios[i].display_name_len,
+            .len = (unsigned int)s->audios[i].display_name_len,
         };
         vec[2 * i].iov_base = &headers[i];
         vec[2 * i].iov_len = sizeof(headers[i]);

@@ -206,11 +206,11 @@ exit:
 
 int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_port) {
     libvlc_media_t *vlc_media = NULL;
+    const char *args[] = {"--quiet"};
     *c = (Audio_Client){0};
 
-    struct sigaction sa = {
-        .sa_handler = &sigint_handler,
-    };
+    struct sigaction sa = {0};
+    sa.sa_handler = &sigint_handler;
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
         goto err_sigaction;
@@ -225,7 +225,6 @@ int audio_client_init(Audio_Client *c, const char *server_addr, int server_tcp_p
         goto err_queue;
     }
 
-    const char *args[] = {"--quiet"};
     c->vlc_instance = libvlc_new(1, args);
 
     if (!c->vlc_instance) {

@@ -14,13 +14,14 @@ int fd_set_nonblocking(int fd);
 int socket_create_server(const char *addr, int port, int backlog) {
     struct sockaddr_in sockaddr = {0};
     int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int ok = 0, opt = 0;
 
     if (sock == -1) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err_socket;
     }
 
-    int opt = 1;
+    opt = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err;
@@ -28,7 +29,7 @@ int socket_create_server(const char *addr, int port, int backlog) {
 
     sockaddr.sin_family = AF_INET;
     sockaddr.sin_port = htons(port);
-    int ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
+    ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
 
     if (ok <= 0) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
@@ -54,18 +55,19 @@ err_socket:
 }
 
 int socket_create_client(const char *addr, int port) {
+    struct sockaddr_in sockaddr = {0};
     int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int ok = 0;
 
     if (sock == -1) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         goto err_socket;
     }
 
-    struct sockaddr_in sockaddr = {0};
     sockaddr.sin_family = AF_INET;
     sockaddr.sin_port = htons(port);
 
-    int ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
+    ok = inet_pton(AF_INET, addr, &sockaddr.sin_addr.s_addr);
 
     if (ok <= 0) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
@@ -103,10 +105,9 @@ int fd_set_nonblocking(int fd) {
 }
 
 int epoll_add_fd(int epoll, int fd, uint32_t events) {
-    struct epoll_event ev = {
-        .data.fd = fd,
-        .events = events,
-    };
+    struct epoll_event ev = {0};
+    ev.data.fd = fd;
+    ev.events = events;
     if (epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &ev) == -1) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         return 0;
@@ -123,10 +124,9 @@ int epoll_del_fd(int epoll, int fd) {
 }
 
 int epoll_mod_fd(int epoll, int fd, uint32_t events) {
-    struct epoll_event ev = {
-        .data.fd = fd,
-        .events = events,
-    };
+    struct epoll_event ev = {0};
+    ev.data.fd = fd;
+    ev.events = events;
     if (epoll_ctl(epoll, EPOLL_CTL_MOD, fd, &ev) == -1) {
         nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         return 0;
