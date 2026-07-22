@@ -2,7 +2,7 @@
 #include "io.h"
 #include "protocol.h"
 #include "signals.h"
-#include "suffix.h"
+#include <dirent.h>
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
@@ -268,17 +268,19 @@ void audio_server_load_audios(Audio_Server *s) {
         return;
     }
 
-    struct dirent *de;
-
-    size_t i = 1;
+    struct dirent *de = NULL;
+    int i = 1;
     while ((de = readdir(dir)) != NULL) {
-        if (!(de->d_type == DT_REG && suffix_is_audio(de->d_name))) {
+        String_View mp3_ext = sv_from_cstr(".mp3");
+        String_View file_name = sv_from_cstr(de->d_name);
+
+        if (de->d_type != DT_REG || !sv_ends_with(file_name, mp3_ext)) {
             continue;
         }
 
         Audio2 audio = {0};
         char *name = de->d_name;
-        audio.display_name_len = snprintf(audio.display_name, sizeof(audio.display_name), "[%ld] %s", i, name);
+        audio.display_name_len = snprintf(audio.display_name, sizeof(audio.display_name), "[%d] %s", i, name);
         char path[PATH_MAX];
         strcpy(path, AUDIODIR "/");
         strcat(path, name);
