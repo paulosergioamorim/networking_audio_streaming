@@ -123,9 +123,9 @@ void queue_enqueue2(Queue *q, int fd, size_t len) {
     while (q->count + len > q->capacity && q->is_active)
         pthread_cond_wait(&q->cond_full, &q->mu);
 
-    ssize_t bytes_readed = 0;
+    ssize_t bytes_read = 0;
     if (q->is_active) {
-        for (size_t i = 0; i < len; i += bytes_readed, len -= i) {
+        for (size_t i = 0; i < len; i += bytes_read, len -= i) {
             struct iovec vec[2];
             size_t vec_count = 1;
             size_t rest_bytes = (q->head + len) % q->capacity;
@@ -137,17 +137,17 @@ void queue_enqueue2(Queue *q, int fd, size_t len) {
                 vec[1].iov_len = rest_bytes;
                 vec_count = 2;
             }
-            bytes_readed = readv(fd, vec, vec_count);
-            if (bytes_readed == -1) {
-                bytes_readed = 0;
+            bytes_read = readv(fd, vec, vec_count);
+            if (bytes_read == -1) {
+                bytes_read = 0;
                 if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
                     nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
                 }
                 struct pollfd pollfds[1] = {0};
                 pollfds[0].fd = fd;
                 pollfds[0].events = POLLIN;
-                q->head = (q->head + bytes_readed) % q->capacity;
-                q->count += bytes_readed;
+                q->head = (q->head + bytes_read) % q->capacity;
+                q->count += bytes_read;
                 pthread_mutex_lock(&q->mu);
                 int nfds = poll(pollfds, 1, -1);
                 if (nfds == -1) {
@@ -156,8 +156,8 @@ void queue_enqueue2(Queue *q, int fd, size_t len) {
                 pthread_mutex_unlock(&q->mu);
                 continue;
             }
-            q->head = (q->head + bytes_readed) % q->capacity;
-            q->count += bytes_readed;
+            q->head = (q->head + bytes_read) % q->capacity;
+            q->count += bytes_read;
         }
     }
 

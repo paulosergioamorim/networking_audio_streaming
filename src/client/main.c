@@ -351,17 +351,17 @@ void audio_client_stats_print(Audio_Client *c) {
 void audio_client_handle_response(Audio_Client *c) {
     while (1) {
         Response res = {0};
-        ssize_t bytes_readed = recv(c->sock, &res.header, sizeof(res.header), 0);
+        ssize_t bytes_read = recv(c->sock, &res.header, sizeof(res.header), 0);
         Message_Kind kind = res.header.kind;
 
-        if (bytes_readed == -1) {
+        if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
             nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
         }
 
-        if (bytes_readed == 0) {
+        if (bytes_read == 0) {
             break;
         }
 
@@ -371,9 +371,9 @@ void audio_client_handle_response(Audio_Client *c) {
                 c->kind_list_start = 0;
                 continue;
             }
-            bytes_readed = recv(c->sock, res.data, res.header.len, 0);
+            bytes_read = recv(c->sock, res.data, res.header.len, 0);
 
-            if (bytes_readed == -1) {
+            if (bytes_read == -1) {
                 nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
                 continue;
             }

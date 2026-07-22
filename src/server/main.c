@@ -493,16 +493,16 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
     while (1) {
         Request req = {0};
         Response res = {0};
-        ssize_t bytes_readed = recv(event_sock, &req, sizeof(req), 0);
+        ssize_t bytes_read = recv(event_sock, &req, sizeof(req), 0);
 
-        if (bytes_readed == 0) {
+        if (bytes_read == 0) {
             req.header.kind = KIND_EXIT;
-        } else if (bytes_readed == -1) {
+        } else if (bytes_read == -1) {
             if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
                 nob_log(ERROR, DEBUG_Fmt, DEBUG_Arg);
             }
             return;
-        } else if (bytes_readed < (ssize_t)sizeof(req)) {
+        } else if (bytes_read < (ssize_t)sizeof(req)) {
             nob_log(WARNING, "Partial read"); // TODO: make this better :)
         }
 
@@ -529,9 +529,9 @@ void audio_server_handle_request(Audio_Server *s, int event_sock) {
 void audio_server_handle_timer(Audio_Server *s) {
     while (1) {
         uint64_t expdir;
-        ssize_t bytes_readed = read(s->timer, &expdir, sizeof(expdir));
+        ssize_t bytes_read = read(s->timer, &expdir, sizeof(expdir));
 
-        if (bytes_readed == -1) {
+        if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return;
             }
